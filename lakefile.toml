@@ -1,0 +1,10 @@
+name = "lithe"
+version = "0.1.0"
+defaultTargets = ["lithe"]
+
+[[lean_lib]]
+name = "Lithe"
+
+[[lean_exe]]
+name = "lithe"
+root = "Main"
