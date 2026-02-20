@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Lithe - WebGPU Compute</title>
+<style>
+  body { font-family: 'SF Mono', Menlo, monospace; margin: 20px; background: #0d1117; color: #c9d1d9; }
+  h1 { color: #58a6ff; }
+  .result { background: #161b22; padding: 16px; border-radius: 8px; border: 1px solid #30363d; margin: 12px 0; }
+  .error { color: #f85149; }
+  .success { color: #3fb950; }
+  pre { background: #161b22; padding: 12px; border-radius: 6px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>Lithe - WebGPU Compute</h1>
+<div id="status">Initializing WebGPU...</div>
+<div id="output" class="result"></div>
+<h2>WGSL Shader</h2>
+<pre id="shader"></pre>
+<script>
+const wgslCode = `@group(0) @binding(0) var<storage, read_write> buf_0 : array<f32>;
+@group(0) @binding(1) var<storage, read_write> buf_1 : array<f32>;
+@group(0) @binding(2) var<storage, read_write> buf_2 : array<f32>;
+
+// TODO: WGSL kernel for node 2
+`;
+document.getElementById('shader').textContent = wgslCode;
+
+function dispatchKernel(device, encoder, pipeline, bindGroup, workgroups) {
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.dispatchWorkgroups(workgroups);
+  pass.end();
+}
+
+async function main() {
+  const status = document.getElementById('status');
+  const output = document.getElementById('output');
+  if (!navigator.gpu) { status.innerHTML = '<span class="error">WebGPU not supported.</span>'; return; }
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) { status.innerHTML = '<span class="error">No GPU adapter.</span>'; return; }
+  const device = await adapter.requestDevice();
+  status.innerHTML = '<span class="success">WebGPU initialized</span>';
+
+  const bufferSizes = [24,8,12];
+  const buffers = bufferSizes.map(size =>
+    device.createBuffer({ size: Math.max(size, 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
+  );
+
+    device.queue.writeBuffer(buffers[0], 0, new Float32Array([1.000000,0.000000,0.000000,1.000000,1.000000,1.000000]));
+    device.queue.writeBuffer(buffers[1], 0, new Float32Array([3.000000,4.000000]));
+
+  const shaderModule = device.createShaderModule({ code: wgslCode });
+  const layoutEntries = buffers.map((_, i) => ({
+    binding: i, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' }
+  }));
+  const bindGroupLayout = device.createBindGroupLayout({ entries: layoutEntries });
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+  const bindGroupEntries = buffers.map((buf, i) => ({ binding: i, resource: { buffer: buf } }));
+  const bindGroup = device.createBindGroup({ layout: bindGroupLayout, entries: bindGroupEntries });
+
+  const kernelNames = wgslCode.match(/fn (kernel_\\d+)/g)?.map(s => s.replace('fn ', '')) || [];
+  const pipelines = kernelNames.map(name =>
+    device.createComputePipeline({ layout: pipelineLayout,
+      compute: { module: shaderModule, entryPoint: name } })
+  );
+
+  const commandEncoder = device.createCommandEncoder();
+    dispatchKernel(device, commandEncoder, pipelines[0], bindGroup, 1);
+
+  const outputBuffer = buffers[2];
+  const readBuffer = device.createBuffer({ size: 12,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  commandEncoder.copyBufferToBuffer(outputBuffer, 0, readBuffer, 0, 12);
+  device.queue.submit([commandEncoder.finish()]);
+  await readBuffer.mapAsync(GPUMapMode.READ);
+  const result = new Float32Array(readBuffer.getMappedRange());
+  output.innerHTML = '<strong>Output shape:</strong> [3,1]<br>' +
+    '<strong>Result:</strong> [' + Array.from(result).map(function(v){ return v.toFixed(4); }).join(', ') + ']';
+  readBuffer.unmap();
+}
+
+main().catch(err => {
+  document.getElementById('status').innerHTML = '<span class="error">' + err + '</span>';
+});
+</script>
+</body>
+</html>
