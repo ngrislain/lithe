@@ -106,9 +106,8 @@ def main : IO Unit := do
   let simpleExpr := a + b
   let plan := Lithe.Backend.TensorExpr.toExecPlan simpleExpr
   IO.println s!"DAG nodes: {plan.nodes.size}, output: {plan.output}"
-  match plan.execute with
-  | .ok result => IO.println s!"CPU backend (a+b) = {repr result.toList}"
-  | .error e => IO.println s!"CPU error: {e}"
+  let result ← plan.executeIO
+  IO.println s!"CPU backend (a+b) = {repr result.toList}"
   IO.println ""
 
   -- 12. CUDA codegen

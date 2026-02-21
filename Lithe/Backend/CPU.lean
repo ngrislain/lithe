@@ -160,4 +160,10 @@ def ExecPlan.execute (plan : ExecPlan) (env : Env Float := Env.empty)
   else
     .error "Invalid output node"
 
+/-- IO-based variant of execute. Converts Except errors to IO errors. -/
+def ExecPlan.executeIO (plan : ExecPlan) (env : Env Float := Env.empty) : IO (Array Float) := do
+  match plan.execute env with
+  | .ok result => pure result
+  | .error e => throw (IO.Error.userError e)
+
 end Lithe.Backend

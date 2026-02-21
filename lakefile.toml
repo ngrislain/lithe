@@ -1,6 +1,7 @@
 name = "lithe"
 version = "0.1.0"
 defaultTargets = ["lithe"]
+testDriver = "test"
 
 [[lean_lib]]
 name = "Lithe"
@@ -8,3 +9,7 @@ name = "Lithe"
 [[lean_exe]]
 name = "lithe"
 root = "Main"
+
+[[lean_exe]]
+name = "test"
+root = "Test"
