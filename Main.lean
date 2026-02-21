@@ -97,8 +97,8 @@ def main : IO Unit := do
   IO.println "--- Visualization ---"
   let vizExpr := Tensor.relu (Tensor.matmul m1 m2)
   let html := vizExpr.toHTML
-  IO.FS.writeFile "graph.html" html
-  IO.println "Wrote graph.html (expression DAG visualization)"
+  IO.FS.writeFile "output/graph.html" html
+  IO.println "Wrote output/graph.html (expression DAG visualization)"
   IO.println ""
 
   -- 11. CPU Backend
@@ -127,8 +127,8 @@ def main : IO Unit := do
     ("input",   ⟨[2, 1], #v[3, 4]⟩)
   ]
   let gpuHtml := gpuExpr.toWebGPUHTML gpuEnv
-  IO.FS.writeFile "compute.html" gpuHtml
-  IO.println "Wrote compute.html (WebGPU compute demo)"
+  IO.FS.writeFile "output/compute.html" gpuHtml
+  IO.println "Wrote output/compute.html (WebGPU compute demo)"
   IO.println ""
 
   IO.println "=== Done ==="
