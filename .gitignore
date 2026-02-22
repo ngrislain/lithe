@@ -1,2 +1,8 @@
-/.lake
+# Lake
+.lake
+
+# Output
 /output
+
+# macOS
+.DS_Store
