@@ -340,6 +340,244 @@ def moduleTests : IO (List TestResult) := do
 
   return results
 
+/-! ### Dim / DimShape tests -/
+
+def dimTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- Dim construction
+  let d1 := Dim.named "batch" 32
+  results := results ++ [← assertEq "dim: named val" d1.val 32]
+  results := results ++ [← assertEq "dim: named name" d1.name (some "batch")]
+
+  -- Anonymous dim
+  let d2 : Dim := ⟨16, none⟩
+  results := results ++ [← assertEq "dim: anon val" d2.val 16]
+  results := results ++ [← assertEq "dim: anon name" d2.name none]
+
+  -- Compatibility: both named same → true
+  results := results ++ [← assertTrue "dim: compatible same name"
+    (Dim.compatible (Dim.named "x" 5) (Dim.named "x" 5))]
+
+  -- Compatibility: both named different → false
+  results := results ++ [← assertTrue "dim: incompatible diff name"
+    (!(Dim.compatible (Dim.named "x" 5) (Dim.named "y" 5)))]
+
+  -- Compatibility: one anonymous → true (values match)
+  results := results ++ [← assertTrue "dim: compatible anon"
+    (Dim.compatible (Dim.named "x" 5) ⟨5, none⟩)]
+
+  -- DimShape.toShape
+  let ds : DimShape := [Dim.named "batch" 2, ⟨3, none⟩]
+  results := results ++ [← assertEq "dimshape: toShape" ds.toShape [2, 3]]
+
+  -- DimShape.fromShape roundtrip
+  let s : Shape := [4, 5]
+  results := results ++ [← assertEq "dimshape: fromShape toShape" (DimShape.fromShape s).toShape s]
+
+  -- DimShape.product
+  results := results ++ [← assertEq "dimshape: product" ds.product 6]
+
+  -- DimShape.findDimIdx
+  results := results ++ [← assertEq "dimshape: findDimIdx found" (ds.findDimIdx "batch") (some 0)]
+  results := results ++ [← assertEq "dimshape: findDimIdx missing" (ds.findDimIdx "seq") none]
+
+  return results
+
+/-! ### NamedTensor tests -/
+
+def namedTensorTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- Arithmetic with matching dims
+  let ds : DimShape := [Dim.named "row" 2, ⟨3, none⟩]
+  let a := NamedTensor.literal ds (by simp [DimShape.toShape]; exact #v[1, 2, 3, 4, 5, 6])
+  let b := NamedTensor.literal ds (by simp [DimShape.toShape]; exact #v[7, 8, 9, 10, 11, 12])
+  let sum := a + b
+  results := results ++ [← assertListClose "named: add"
+    sum.eval.toList [8, 10, 12, 14, 16, 18]]
+
+  let diff := a - b
+  results := results ++ [← assertListClose "named: sub"
+    diff.eval.toList [-6, -6, -6, -6, -6, -6]]
+
+  let neg := -a
+  results := results ++ [← assertListClose "named: neg"
+    neg.eval.toList [-1, -2, -3, -4, -5, -6]]
+
+  -- Zeros / fill
+  let z := NamedTensor.zeros (α := Float) [Dim.named "x" 3]
+  results := results ++ [← assertListClose "named: zeros"
+    z.eval.toList [0, 0, 0]]
+
+  -- Unary ops
+  let x := NamedTensor.literal [⟨4, none⟩] (by simp [DimShape.toShape]; exact #v[-1.0, 0.0, 1.0, 2.0])
+  let r := NamedTensor.relu x
+  results := results ++ [← assertListClose "named: relu"
+    r.eval.toList [0.0, 0.0, 1.0, 2.0]]
+
+  -- Smul
+  let scaled := NamedTensor.smul 2.0 a
+  results := results ++ [← assertListClose "named: smul"
+    scaled.eval.toList [2, 4, 6, 8, 10, 12]]
+
+  return results
+
+/-! ### Slicing tests (plain TensorExpr) -/
+
+def slicingTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- sliceWith on [4, 3]: take rows 1..2, all cols
+  let t : TensorExpr Float [4, 3] := .literal [4, 3] #v[1,2,3, 4,5,6, 7,8,9, 10,11,12]
+  let s := Tensor.sliceWith t [(1, 2), (0, 3)]
+  results := results ++ [← assertListClose "slice: sliceWith [4,3]->[(1,2),(0,3)]"
+    s.eval.toList [4, 5, 6, 7, 8, 9]]
+
+  -- head: select row 0 from [4, 3] → [3]
+  let row0 := Tensor.head t 0
+  results := results ++ [← assertListClose "slice: head row 0"
+    row0.eval.toList [1, 2, 3]]
+
+  -- head: select row 2 from [4, 3] → [3]
+  let row2 := Tensor.head t 2
+  results := results ++ [← assertListClose "slice: head row 2"
+    row2.eval.toList [7, 8, 9]]
+
+  return results
+
+/-! ### Named slicing tests -/
+
+def namedSlicingTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  let ds : DimShape := [Dim.named "batch" 4, Dim.named "feat" 3]
+  let t := NamedTensor.literal ds (by simp [DimShape.toShape]; exact #v[1,2,3, 4,5,6, 7,8,9, 10,11,12])
+
+  -- sliceAt: take batch 1..2
+  match t.sliceAt "batch" 1 2 with
+  | some ⟨_, t2⟩ =>
+    results := results ++ [← assertListClose "named slice: sliceAt batch"
+      t2.eval.toList [4, 5, 6, 7, 8, 9]]
+  | none =>
+    results := results ++ [mkFail "named slice: sliceAt batch" "returned none"]
+
+  -- sliceAt: take feat 0..1
+  match t.sliceAt "feat" 0 1 with
+  | some ⟨_, t3⟩ =>
+    results := results ++ [← assertListClose "named slice: sliceAt feat"
+      t3.eval.toList [1, 4, 7, 10]]
+  | none =>
+    results := results ++ [mkFail "named slice: sliceAt feat" "returned none"]
+
+  -- sliceAt: invalid dim name returns none
+  results := results ++ [← assertTrue "named slice: sliceAt invalid"
+    (t.sliceAt "missing" 0 1).isNone]
+
+  -- reduceAt: sum over feat
+  match t.reduceAt "feat" .sum with
+  | some ⟨_, t4⟩ =>
+    results := results ++ [← assertListClose "named slice: reduceAt feat sum"
+      t4.eval.toList [6, 15, 24, 33]]
+  | none =>
+    results := results ++ [mkFail "named slice: reduceAt feat sum" "returned none"]
+
+  -- reduceAt: sum over batch
+  match t.reduceAt "batch" .sum with
+  | some ⟨_, t5⟩ =>
+    results := results ++ [← assertListClose "named slice: reduceAt batch sum"
+      t5.eval.toList [22, 26, 30]]
+  | none =>
+    results := results ++ [mkFail "named slice: reduceAt batch sum" "returned none"]
+
+  return results
+
+/-! ### Einsum tests -/
+
+def einsumTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- Parse correctness
+  match Einsum.parse "ij,jk->ik" with
+  | some (subsA, subsB, subsOut) =>
+    results := results ++ [← assertEq "einsum: parse matmul subsA" subsA [0, 1]]
+    results := results ++ [← assertEq "einsum: parse matmul subsB" subsB [1, 2]]
+    results := results ++ [← assertEq "einsum: parse matmul subsOut" subsOut [0, 2]]
+  | none =>
+    results := results ++ [mkFail "einsum: parse matmul" "parse returned none"]
+
+  match Einsum.parse "i,i->" with
+  | some (subsA, subsB, subsOut) =>
+    results := results ++ [← assertEq "einsum: parse dot subsA" subsA [0]]
+    results := results ++ [← assertEq "einsum: parse dot subsB" subsB [0]]
+    results := results ++ [← assertEq "einsum: parse dot subsOut" subsOut []]
+  | none =>
+    results := results ++ [mkFail "einsum: parse dot" "parse returned none"]
+
+  -- End-to-end matmul via einsum string
+  let a : TensorExpr Float [2, 3] := .literal [2, 3] #v[1, 2, 3, 4, 5, 6]
+  let b : TensorExpr Float [3, 2] := .literal [3, 2] #v[1, 0, 0, 1, 1, 1]
+  match Einsum.ein "ij,jk->ik" a b with
+  | some ⟨_, c⟩ =>
+    results := results ++ [← assertListClose "einsum: matmul result"
+      c.eval.toList [4, 5, 10, 11]]
+  | none =>
+    results := results ++ [mkFail "einsum: matmul result" "ein returned none"]
+
+  -- Dot product via einsum string
+  let x : TensorExpr Float [3] := .literal [3] #v[1, 2, 3]
+  let y : TensorExpr Float [3] := .literal [3] #v[4, 5, 6]
+  match Einsum.ein "i,i->" x y with
+  | some ⟨_, d⟩ =>
+    results := results ++ [← assertListClose "einsum: dot product"
+      d.eval.toList [32]]
+  | none =>
+    results := results ++ [mkFail "einsum: dot product" "ein returned none"]
+
+  -- Outer product via einsum string
+  match Einsum.ein "i,j->ij" x y with
+  | some ⟨_, e⟩ =>
+    results := results ++ [← assertListClose "einsum: outer product"
+      e.eval.toList [4, 5, 6, 8, 10, 12, 12, 15, 18]]
+  | none =>
+    results := results ++ [mkFail "einsum: outer product" "ein returned none"]
+
+  -- Invalid spec returns none
+  results := results ++ [← assertTrue "einsum: invalid spec"
+    (Einsum.ein "abc" a b).isNone]
+
+  return results
+
+/-! ### Module pipeline tests -/
+
+open Module in
+def modulePipelineTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- Pipeline operator produces same params as compose
+  let m1 := linear 3 4 "fc1"
+  let m2 := linear 4 2 "fc2"
+  let composed := compose m1 m2
+  let piped := m1 |>> m2
+
+  results := results ++ [← assertEq "module: pipeline params match compose"
+    (piped.params.map Prod.fst) (composed.params.map Prod.fst)]
+
+  -- Pipeline with relu
+  let model := linear 4 3 "l1" |>> (reluLayer [3] : Module Float _ _) |>> linear 3 2 "l2"
+  let paramNames := model.params.map Prod.fst
+  results := results ++ [← assertTrue "module: pipeline has l1.weight"
+    (paramNames.contains "l1.weight")]
+  results := results ++ [← assertTrue "module: pipeline has l2.bias"
+    (paramNames.contains "l2.bias")]
+  results := results ++ [← assertEq "module: pipeline param count" model.params.length 4]
+
+  -- Identity module
+  let idMod := identity (α := Float) [3]
+  results := results ++ [← assertEq "module: identity no params" idMod.params.length 0]
+
+  return results
+
 /-! ### Runner -/
 
 def main : IO Unit := do
@@ -347,13 +585,19 @@ def main : IO Unit := do
   IO.println ""
 
   let suites : List (String × IO (List TestResult)) := [
-    ("Eval",        evalTests),
-    ("Env",         envTests),
-    ("Autodiff",    autodiffTests),
-    ("Viz",         vizTests),
-    ("CPU Backend", cpuBackendTests),
-    ("Codegen",     codegenTests),
-    ("Module",      moduleTests)
+    ("Eval",           evalTests),
+    ("Env",            envTests),
+    ("Autodiff",       autodiffTests),
+    ("Viz",            vizTests),
+    ("CPU Backend",    cpuBackendTests),
+    ("Codegen",        codegenTests),
+    ("Module",         moduleTests),
+    ("Dim/DimShape",   dimTests),
+    ("NamedTensor",    namedTensorTests),
+    ("Slicing",        slicingTests),
+    ("Named Slicing",  namedSlicingTests),
+    ("Einsum",         einsumTests),
+    ("Module Pipeline", modulePipelineTests)
   ]
 
   let mut totalPassed := 0

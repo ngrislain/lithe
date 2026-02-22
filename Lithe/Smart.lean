@@ -163,4 +163,31 @@ private def perm2D (m n : Nat) : Vector (Fin [m, n].length) [m, n].length :=
 def transpose2D [Scalar α] (t : TensorExpr α [m, n]) : TensorExpr α [n, m] :=
   .transpose t (perm2D m n)
 
+/-! ### Convenient slicing -/
+
+/-- Slice with `(start, size)` pairs — proof auto-resolved by `decide`.
+    Usage: `t.sliceWith [(1, 2), (0, 3), (0, 2)]` -/
+def sliceWith [Scalar α] (t : TensorExpr α s) (ranges : List (Nat × Nat))
+    (h : ValidSlice s (ranges.map Prod.fst) (ranges.map Prod.snd) := by decide)
+    : TensorExpr α (ranges.map Prod.snd) :=
+  .slice t (ranges.map Prod.fst) (ranges.map Prod.snd) h
+
+/-- Index along the first axis (rank reduction): `t.head i` selects index `i`
+    from the leading dimension, returning a tensor of the remaining shape.
+    Implemented as a slice of width 1 followed by reshape. -/
+def head [Scalar α] (t : TensorExpr α (d :: rest)) (i : Nat)
+    (hi : i < d := by omega)
+    : TensorExpr α rest :=
+  let starts := i :: rest.map (fun _ => 0)
+  let sizes := 1 :: rest
+  have hlen1 : starts.length = (d :: rest).length := by simp [starts, List.length_map]
+  have hlen2 : sizes.length = (d :: rest).length := by simp [sizes]
+  have hvalid : ∀ j : Fin (d :: rest).length,
+      List.getD starts j.val 0 + List.getD sizes j.val 0 ≤ (d :: rest).get j := by
+    sorry
+  have hprod : product (1 :: rest) = product rest := by
+    simp [product, Nat.one_mul]
+  let sliced := TensorExpr.slice t starts sizes ⟨hlen1, hlen2, hvalid⟩
+  TensorExpr.reshape sliced hprod
+
 end Tensor

@@ -14,5 +14,8 @@ import Lithe.Backend.CPU
 import Lithe.Backend.Codegen.Common
 import Lithe.Backend.Codegen.CUDA
 import Lithe.Backend.Codegen.WGSL
+import Lithe.Dim
+import Lithe.Einsum
+import Lithe.NamedTensor
 import Lithe.Proofs.Shape
 import Lithe.Proofs.Eval

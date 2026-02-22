@@ -31,6 +31,14 @@ def run (m : Module Float sIn sOut) (env : Env Float) (input : Vector Float sIn.
   let inputExpr := TensorExpr.literal sIn input
   (m.forward inputExpr).evalWith env
 
+/-- Identity module (no-op, no parameters). -/
+def identity [Scalar α] (s : Shape) : Module α s s where
+  forward x := x
+  params := []
+
+/-- Pipeline composition operator: `m1 |>> m2 = compose m1 m2`. -/
+scoped infixl:50 " |>> " => Module.compose
+
 /-! ### Example layers -/
 
 /-- Fully connected linear layer: $y = xW + b$ where $W \in \mathbb{R}^{d_{\text{in}} \times d_{\text{out}}}$
@@ -55,8 +63,8 @@ def reluLayer [Scalar α] (s : Shape) : Module α s s where
 /-- Two-layer MLP: $\operatorname{linear}_2(\operatorname{relu}(\operatorname{linear}_1(x)))$.
     Composes a linear layer, a ReLU activation, and a second linear layer. -/
 def mlp (inDim hiddenDim outDim : Nat) (name : String) : Module Float [inDim] [outDim] :=
-  compose
-    (compose (linear inDim hiddenDim (name ++ ".layer1")) (reluLayer [hiddenDim]))
-    (linear hiddenDim outDim (name ++ ".layer2"))
+  linear inDim hiddenDim (name ++ ".layer1")
+    |>> (reluLayer [hiddenDim] : Module Float _ _)
+    |>> linear hiddenDim outDim (name ++ ".layer2")
 
 end Module
