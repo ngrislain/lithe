@@ -128,6 +128,8 @@ private def emitEdge (st : BuildState) (fromId toId : Nat) : BuildState :=
 
 -- ── Recursive graph builder ──────────────────────────────────────────
 
+/-- Recursively traverse a `TensorExpr` and emit DOT graph nodes and edges.
+    Returns the root node ID and the accumulated build state. -/
 partial def buildGraph (st : BuildState) : TensorExpr Float s → (Nat × BuildState)
   | .literal s _ =>
     emitNode st "Const" "" s colorConstant
@@ -204,7 +206,8 @@ partial def buildGraph (st : BuildState) : TensorExpr Float s → (Nat × BuildS
 
 -- ── Public API ───────────────────────────────────────────────────────
 
-/-- Convert a TensorExpr to DOT format. -/
+/-- Convert a `TensorExpr` to a DOT-format directed graph string for Graphviz rendering.
+    The resulting string can be passed to `dot` or any Graphviz-compatible tool. -/
 def toDot (e : TensorExpr Float s) : String :=
   let (rootId, st) := buildGraph {} e
   let header := "digraph TensorExpr {\n"
@@ -218,7 +221,8 @@ def toDot (e : TensorExpr Float s) : String :=
     ++ "  n" ++ toString rootId ++ " [penwidth=2];\n"
   header ++ body ++ entry ++ "}\n"
 
-/-- Generate self-contained HTML with embedded DOT rendering via viz-js. -/
+/-- Generate a self-contained HTML page with embedded DOT rendering via viz-js CDN.
+    The page auto-refreshes every 60 seconds and uses modern SVG rendering. -/
 def toHTML (e : TensorExpr Float s) : String :=
   let dot := toDot e
   "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
@@ -252,10 +256,12 @@ end Lithe.Viz
 
 namespace TensorExpr
 
-/-- Generate DOT graph representation. -/
+/-- Generate DOT graph representation of this tensor expression.
+    Delegates to `Lithe.Viz.toDot`. -/
 def toDot (e : TensorExpr Float s) : String := Lithe.Viz.toDot e
 
-/-- Generate self-contained HTML visualization. -/
+/-- Generate self-contained HTML visualization of this tensor expression.
+    Delegates to `Lithe.Viz.toHTML`. -/
 def toHTML (e : TensorExpr Float s) : String := Lithe.Viz.toHTML e
 
 end TensorExpr

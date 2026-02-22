@@ -10,24 +10,28 @@ open Shape
 
 /-! ### Typeclass instances for TensorExpr -/
 
+/-- Pointwise addition: $(T_1 + T_2)_\mathbf{i} = (T_1)_\mathbf{i} + (T_2)_\mathbf{i}$. -/
 instance [Scalar α] : Add (TensorExpr α s) where
   add a b := .binary .add a b
 
+/-- Pointwise (Hadamard) product: $(T_1 \cdot T_2)_\mathbf{i} = (T_1)_\mathbf{i} \cdot (T_2)_\mathbf{i}$. -/
 instance [Scalar α] : Mul (TensorExpr α s) where
   mul a b := .binary .mul a b
 
+/-- Pointwise negation: $(-T)_\mathbf{i} = -(T_\mathbf{i})$. -/
 instance [Scalar α] : Neg (TensorExpr α s) where
   neg a := .unary .neg a
 
+/-- Pointwise subtraction: $(T_1 - T_2)_\mathbf{i} = (T_1)_\mathbf{i} - (T_2)_\mathbf{i}$. -/
 instance [Scalar α] : Sub (TensorExpr α s) where
   sub a b := .binary .sub a b
 
 namespace Tensor
 
-/-- Zero tensor of any shape. -/
+/-- Zero tensor $\mathbf{0}_s$ with every element equal to $0$. -/
 def zeros [Scalar α] (s : Shape) : Tensor α s := .fill s 0
 
-/-- Ones tensor of any shape. -/
+/-- Ones tensor $\mathbf{1}_s$ with every element equal to $1$. -/
 def ones [Scalar α] (s : Shape) : Tensor α s := .fill s 1
 
 /-! ### Einsum proofs -/
@@ -60,12 +64,12 @@ private theorem matmul_einsum_valid (m k n : Nat) :
     IsEinsumValid [0, 1] [1, 2] [0, 2] [m, k] [k, n] [m, n] :=
   ⟨rfl, rfl, rfl, matmul_einsum_shared m k n, matmul_einsum_output m k n⟩
 
-/-- Matrix multiply [m,k] × [k,n] → [m,n] via einsum. -/
+/-- Matrix multiplication via einsum: $C_{mn} = \sum_k A_{mk} B_{kn}$, encoding $ik, kj \to ij$. -/
 def matmul [Scalar α] (a : TensorExpr α [m, k]) (b : TensorExpr α [k, n])
     : TensorExpr α [m, n] :=
   .einsum [0, 1] [1, 2] [0, 2] a b (matmul_einsum_valid m k n)
 
-/-- Batch matrix multiply [b,m,k] × [b,k,n] → [b,m,n]. -/
+/-- Batched matrix multiplication: $C_{bmn} = \sum_k A_{bmk} B_{bkn}$, encoding $bik, bkj \to bij$. -/
 def batchMatmul [Scalar α] (a : TensorExpr α [ba, m, k]) (b' : TensorExpr α [ba, k, n])
     : TensorExpr α [ba, m, n] :=
   .einsum [0, 1, 2] [0, 2, 3] [0, 1, 3] a b' ⟨rfl, rfl, rfl, by
@@ -88,7 +92,7 @@ def batchMatmul [Scalar α] (a : TensorExpr α [ba, m, k]) (b' : TensorExpr α [
     | 2, _ => right; exact ⟨⟨2, by decide⟩, by simp [List.getD]⟩
   ⟩
 
-/-- Outer product [m] × [n] → [m,n]. -/
+/-- Outer product: $C_{ij} = a_i \cdot b_j$, encoding $i, j \to ij$. -/
 def outer [Scalar α] (a : TensorExpr α [m]) (b : TensorExpr α [n])
     : TensorExpr α [m, n] :=
   .einsum [0] [1] [0, 1] a b ⟨rfl, rfl, rfl, by
@@ -102,7 +106,7 @@ def outer [Scalar α] (a : TensorExpr α [m]) (b : TensorExpr α [n])
     | 1, _ => right; exact ⟨⟨0, by decide⟩, by simp [List.getD]⟩
   ⟩
 
-/-- Dot product [n] × [n] → []. -/
+/-- Dot (inner) product: $c = \sum_i a_i \cdot b_i$, encoding $i, i \to \varnothing$. -/
 def dot [Scalar α] (a b : TensorExpr α [n]) : TensorExpr α [] :=
   .einsum [0] [0] [] a b ⟨rfl, rfl, rfl, by
     intro ⟨ia, hia⟩ ⟨ib, hib⟩ heq
@@ -113,27 +117,40 @@ def dot [Scalar α] (a b : TensorExpr α [n]) : TensorExpr α [] :=
 
 /-! ### Reduction-based ops -/
 
+/-- Cumulative sum along axis $k$: $y_{\ldots,j,\ldots} = \sum_{i=0}^{j} x_{\ldots,i,\ldots}$. -/
 def cumsum [Scalar α] (axis : Fin s.length) (t : TensorExpr α s) : TensorExpr α s :=
   .scan .sum axis t
 
+/-- Cumulative product along axis $k$: $y_{\ldots,j,\ldots} = \prod_{i=0}^{j} x_{\ldots,i,\ldots}$. -/
 def cumprod [Scalar α] (axis : Fin s.length) (t : TensorExpr α s) : TensorExpr α s :=
   .scan .prod axis t
 
+/-- Mean along axis $k$: $\bar{x} = \frac{1}{d_k} \sum_{i=0}^{d_k-1} x_{\ldots,i,\ldots}$. -/
 def mean (axis : Fin s.length) (t : TensorExpr Float s) : TensorExpr Float (s.removeAt axis) :=
   let n := List.getD s axis.val 1
   .smul (1.0 / n.toFloat) (.reduce .sum axis t)
 
 /-! ### Unary ops as functions -/
 
+/-- Elementwise exponential: $(e^T)_\mathbf{i} = e^{T_\mathbf{i}}$. -/
 def exp [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .exp t
+/-- Elementwise natural logarithm: $(\ln T)_\mathbf{i} = \ln(T_\mathbf{i})$. -/
 def log [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .log t
+/-- Elementwise square root: $(\sqrt{T})_\mathbf{i} = \sqrt{T_\mathbf{i}}$. -/
 def sqrt [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .sqrt t
+/-- Elementwise sine: $(\sin T)_\mathbf{i} = \sin(T_\mathbf{i})$. -/
 def sin [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .sin t
+/-- Elementwise cosine: $(\cos T)_\mathbf{i} = \cos(T_\mathbf{i})$. -/
 def cos [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .cos t
+/-- Elementwise hyperbolic tangent: $(\tanh T)_\mathbf{i} = \tanh(T_\mathbf{i})$. -/
 def tanh [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .tanh t
+/-- Elementwise sigmoid: $(\sigma(T))_\mathbf{i} = \frac{1}{1 + e^{-T_\mathbf{i}}}$. -/
 def sigmoid [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .sigmoid t
+/-- Elementwise ReLU: $(\operatorname{relu}(T))_\mathbf{i} = \max(0, T_\mathbf{i})$. -/
 def relu [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .relu t
+/-- Elementwise absolute value: $(|T|)_\mathbf{i} = |T_\mathbf{i}|$. -/
 def abs [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .abs t
+/-- Elementwise sign function: $(\operatorname{sign}(T))_\mathbf{i} = \operatorname{sign}(T_\mathbf{i})$. -/
 def sign [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .sign t
 
 /-! ### Transpose shortcuts -/
@@ -142,6 +159,7 @@ def sign [Scalar α] (t : TensorExpr α s) : TensorExpr α s := .unary .sign t
 private def perm2D (m n : Nat) : Vector (Fin [m, n].length) [m, n].length :=
   ⟨#[⟨1, by show 1 < 2; omega⟩, ⟨0, by show 0 < 2; omega⟩], rfl⟩
 
+/-- Transpose a 2D tensor: $T'_{ji} = T_{ij}$, swapping axes $0 \leftrightarrow 1$. -/
 def transpose2D [Scalar α] (t : TensorExpr α [m, n]) : TensorExpr α [n, m] :=
   .transpose t (perm2D m n)
 

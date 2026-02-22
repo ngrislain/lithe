@@ -15,18 +15,18 @@ private theorem linearIndex_lt (m n : Nat) (i : Fin m) (j : Fin n) :
   have step3 : (i.val + 1) * n ≤ m * n := Nat.mul_le_mul_right n hi
   omega
 
-/-- Convert 2D indices (i, j) into a linear index into a flat array of size m * n. -/
+/-- Map 2D indices to linear: $(i, j) \mapsto i \cdot n + j$, returning a `Fin (m \cdot n)`. -/
 def linearIndex (m n : Nat) (i : Fin m) (j : Fin n) : Fin (m * n) :=
   ⟨i.val * n + j.val, linearIndex_lt m n i j⟩
 
-/-- Decompose a linear index into 2D indices. -/
+/-- Inverse of `linearIndex`: $\ell \mapsto (\lfloor \ell / n \rfloor,\; \ell \bmod n)$. -/
 def decomposeIndex (m n : Nat) (hn : n > 0) (idx : Fin (m * n)) : Fin m × Fin n :=
   (⟨idx.val / n, by
     have hidx := idx.isLt
     exact Nat.div_lt_of_lt_mul (Nat.mul_comm m n ▸ hidx)⟩,
    ⟨idx.val % n, Nat.mod_lt _ hn⟩)
 
-/-- Fold over Fin n, accumulating a scalar sum. -/
+/-- Fold over $\{0, \ldots, n-1\}$: $\sum_{i=0}^{n-1} f(i)$ using `Scalar` addition. -/
 def finFold [Scalar α] (n : Nat) (f : Fin n → α) : α :=
   go 0 (Nat.zero_le n) 0
 where
@@ -38,7 +38,7 @@ where
 
 /-! ### N-dimensional index arithmetic -/
 
-/-- Convert multi-dimensional indices to a linear index.
+/-- Row-major linearization: $(i_1, \ldots, i_r) \mapsto \sum_{k=1}^{r} i_k \cdot \prod_{j=k+1}^{r} d_j$.
     `dims` is the shape, `indices` are the coordinates (one per dim). -/
 def multiToLinear (dims : List Nat) (indices : List Nat) : Nat :=
   go dims indices 0
@@ -48,7 +48,8 @@ where
     | _, [], acc => acc
     | d :: ds, i :: is, acc => go ds is (acc * d + i)
 
-/-- Convert a linear index to multi-dimensional indices.
+/-- Inverse of `multiToLinear`: recovers multi-dimensional coordinates from a flat index
+    via $i_k = \lfloor \ell / \sigma_k \rfloor \bmod d_k$ where $\sigma_k$ is the stride.
     Returns indices from most-significant to least-significant dimension. -/
 def linearToMulti (dims : List Nat) (idx : Nat) : List Nat :=
   let strides := suffixProducts dims
@@ -69,7 +70,7 @@ where
       let coord := (idx / stride) % d
       coord :: go ds strides (pos + 1) idx
 
-/-- Compute the stride for a given axis in a shape. -/
+/-- Stride for axis $k$: $\sigma_k = \prod_{j=k+1}^{r} d_j$. -/
 def axisStride (s : Shape) (axis : Nat) : Nat :=
   Shape.product (s.drop (axis + 1))
 

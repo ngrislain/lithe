@@ -10,7 +10,9 @@ import Lithe.Eval
 
 namespace Lithe.Backend
 
-/-- A node in the flattened DAG. -/
+/-- A node operation in the flattened DAG, representing one computational step
+    with references to input node indices. Each variant carries the operation
+    type and the integer indices of its operand nodes. -/
 inductive DagOp where
   | literal (data : Array Float)
   | fill (val : Float) (size : Nat)
@@ -31,24 +33,27 @@ inductive DagOp where
   | einsum (subsA subsB subsOut : List Nat) (left right : Nat)
   deriving Repr
 
-/-- A node in the execution plan. -/
+/-- A DAG node: an operation paired with its output shape. -/
 structure DagNode where
   op    : DagOp
   shape : Shape
   deriving Repr
 
-/-- An execution plan: a topologically sorted array of nodes. -/
+/-- An execution plan: a topologically sorted array of `DagNode`s with a
+    designated output node index. Nodes are ordered so that every operand
+    appears before the node that references it. -/
 structure ExecPlan where
   nodes  : Array DagNode
   output : Nat  -- index of the output node
   deriving Repr
 
-/-- State for DAG flattening. -/
+/-- Mutable state for DAG construction, accumulating nodes during flattening. -/
 structure FlattenState where
   nodes : Array DagNode := #[]
 
 namespace FlattenState
 
+/-- Append a new node to the DAG and return its index. -/
 def addNode (st : FlattenState) (node : DagNode) : (Nat × FlattenState) :=
   (st.nodes.size, { nodes := st.nodes.push node })
 
@@ -57,7 +62,8 @@ end FlattenState
 private def getBuffer (buffers : Array (Array Float)) (i : Nat) : Array Float :=
   if h : i < buffers.size then buffers[i] else #[]
 
-/-- Flatten a TensorExpr into a DAG. Returns (nodeId, state). -/
+/-- Flatten a `TensorExpr` tree into a linear DAG, converting tree references
+    to integer node indices. Returns the root node index and the accumulated state. -/
 partial def flatten (st : FlattenState) : TensorExpr Float s → (Nat × FlattenState)
   | .literal s v =>
     st.addNode { op := .literal v.toArray, shape := s }
@@ -114,7 +120,8 @@ partial def flatten (st : FlattenState) : TensorExpr Float s → (Nat × Flatten
     let (idB, st2) := flatten st1 eB
     st2.addNode { op := .einsum subsA subsB subsOut idA idB, shape := s }
 
-/-- Create an execution plan from a tensor expression. -/
+/-- Convert a tensor expression into an executable DAG plan.
+    Flattens the expression tree and records the output node index. -/
 def TensorExpr.toExecPlan (e : TensorExpr Float s) : ExecPlan :=
   let (outId, st) := flatten {} e
   { nodes := st.nodes, output := outId }
@@ -148,7 +155,8 @@ private def executeNode (node : DagNode) (buffers : Array (Array Float))
   | _ =>
     .error "CPU backend: op not yet implemented"
 
-/-- Execute the full plan. -/
+/-- Execute the DAG plan sequentially, computing each node's output buffer
+    in topological order. Returns the final output buffer. -/
 def ExecPlan.execute (plan : ExecPlan) (env : Env Float := Env.empty)
     : Except String (Array Float) := do
   let mut buffers : Array (Array Float) := #[]
@@ -160,7 +168,7 @@ def ExecPlan.execute (plan : ExecPlan) (env : Env Float := Env.empty)
   else
     .error "Invalid output node"
 
-/-- IO-based variant of execute. Converts Except errors to IO errors. -/
+/-- IO wrapper for `execute` that converts `Except` errors to `IO.Error`. -/
 def ExecPlan.executeIO (plan : ExecPlan) (env : Env Float := Env.empty) : IO (Array Float) := do
   match plan.execute env with
   | .ok result => pure result

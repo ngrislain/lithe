@@ -9,20 +9,43 @@ import Lithe.Smart
 
 open Shape
 
-/-- Gradient accumulator: maps var names to (shape, gradient expression). -/
+/-- Gradient accumulator: a list of $(name, (s, \bar{T}))$ pairs mapping variable
+names to their adjoint (cotangent) tensors.
+
+Each entry records the variable name, its shape, and the symbolic expression
+for the gradient contribution. Multiple entries for the same variable may exist
+and should be summed during final accumulation. -/
 abbrev Grads := List (String × (Σ s : Shape, TensorExpr Float s))
 
 namespace Grads
 
-/-- Merge two gradient lists (simple concatenation; accumulate later). -/
+/-- Merge two gradient lists by concatenation (accumulation deferred).
+
+Since the same variable may appear in both lists, final gradient values are
+obtained by summing all entries sharing a variable name. -/
 def merge (g1 g2 : Grads) : Grads := g1 ++ g2
 
 end Grads
 
 namespace TensorExpr
 
-/-- Compute VJP (vector-Jacobian product) for a tensor expression.
-    Given an expression and its adjoint (cotangent), returns gradients for all variables. -/
+/-- Compute VJP (vector-Jacobian product) via reverse-mode AD.
+
+Given expression $f$ and adjoint $\bar{y}$, propagates gradients using the
+chain rule. Key rules:
+
+- $\overline{\operatorname{neg}}: \bar{x} = -\bar{y}$
+- $\overline{\exp}: \bar{x} = \bar{y} \cdot e^x$
+- $\overline{\ln}: \bar{x} = \bar{y} / x$
+- $\overline{\tanh}: \bar{x} = \bar{y} \cdot (1 - \tanh^2 x)$
+- $\overline{\sigma}: \bar{x} = \bar{y} \cdot \sigma(x)(1 - \sigma(x))$
+- $\overline{\operatorname{relu}}: \bar{x} = \bar{y} \cdot \mathbf{1}_{x > 0}$
+- $\overline{+}: \bar{x}_1 = \bar{y},\; \bar{x}_2 = \bar{y}$
+- $\overline{\cdot}: \bar{x}_1 = \bar{y} \cdot x_2,\; \bar{x}_2 = \bar{y} \cdot x_1$
+- $\overline{/}: \bar{x}_1 = \bar{y}/x_2,\; \bar{x}_2 = -\bar{y} \cdot x_1 / x_2^2$
+- $\overline{x^y}: \bar{x} = \bar{y} \cdot y \cdot x^{y-1},\; \bar{y}_2 = \bar{y} \cdot x^y \ln x$
+
+Returns a `Grads` list pairing each variable name with its adjoint tensor. -/
 def backward : TensorExpr Float s → (adjoint : TensorExpr Float s) → Grads
   | .literal _ _, _ => []
   | .fill _ _, _ => []
@@ -100,8 +123,12 @@ def backward : TensorExpr Float s → (adjoint : TensorExpr Float s) → Grads
     -- Simplified: propagate gradients through both inputs
     (eA.backward (.fill _ 0.0)).merge (eB.backward (.fill _ 0.0))
 
-/-- Compute gradients of a scalar expression w.r.t. all variables.
-    Seeds the backward pass with adjoint = 1.0. -/
+/-- Compute gradients of a scalar loss $\ell$ w.r.t. all variables by seeding
+backward with $\bar{\ell} = 1$.
+
+Initiates reverse-mode AD from a scalar (shape `[]`) expression, producing
+a `Grads` list of adjoint tensors for every variable that appears in the
+computation graph. -/
 def grad (loss : TensorExpr Float []) : Grads :=
   loss.backward (.fill [] 1.0)
 

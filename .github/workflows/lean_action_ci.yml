@@ -12,3 +12,30 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: leanprover/lean-action@v1
+
+  docs:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: leanprover/lean-action@v1
+        with:
+          build-args: "Lithe:docs"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .lake/build/doc/
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

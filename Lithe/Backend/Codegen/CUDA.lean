@@ -85,7 +85,9 @@ private def genHostFunction (plan : ExecPlan) : String :=
   freeAll ++
   "}\n"
 
-/-- Generate complete CUDA source for an execution plan. -/
+/-- Generate complete CUDA C source code for an execution plan, including
+    `__global__` kernels and a host `execute()` function that allocates
+    device buffers, dispatches kernels, and frees resources. -/
 def generateCUDA (plan : ExecPlan) : String :=
   let header := "#include <cuda_runtime.h>\n#include <stdio.h>\n#include <math.h>\n\n"
   let kernels := plan.nodes.foldl (fun (acc : String × Nat) node =>
@@ -99,7 +101,8 @@ end Lithe.Backend.Codegen.CUDA
 
 namespace TensorExpr
 
-/-- Generate CUDA C source for this expression. -/
+/-- Generate CUDA C source code for this tensor expression. Flattens the expression
+    into a DAG execution plan and emits corresponding CUDA kernels. -/
 def toCUDA (e : TensorExpr Float s) : String :=
   let plan := Lithe.Backend.TensorExpr.toExecPlan e
   Lithe.Backend.Codegen.CUDA.generateCUDA plan

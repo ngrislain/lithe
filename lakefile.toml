@@ -3,8 +3,16 @@ version = "0.1.0"
 defaultTargets = ["lithe"]
 testDriver = "test"
 
+[[require]]
+scope = "leanprover"
+name = "doc-gen4"
+rev = "main"
+
 [[lean_lib]]
 name = "Lithe"
+
+[[lean_lib]]
+name = "Examples"
 
 [[lean_exe]]
 name = "lithe"

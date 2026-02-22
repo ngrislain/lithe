@@ -12,25 +12,36 @@ open Lithe
 
 namespace Lithe
 
-/-- Shape product for a pair [m, k] equals m * k. -/
+/-- Theorem: $|[m, k]| = m \cdot k$.
+
+The shape product of a two-element shape equals the ordinary product of its dimensions. -/
 theorem shape_product_pair (m k : Nat) : Shape.product [m, k] = m * k := by
   simp [Shape.product, Nat.mul_one]
 
 /-! ### Evaluation helpers for each constructor -/
 
-/-- Evaluate unary op on Float vectors. -/
+/-- Apply a unary operation pointwise: $v'_i = f(v_i)$.
+
+Maps the `Float` interpreter of the given `UnaryOp` over every element. -/
 def evalUnaryVec (op : UnaryOp) (v : Vector Float n) : Vector Float n :=
   v.map op.evalFloat
 
-/-- Evaluate binary op on Float vectors. -/
+/-- Apply a binary operation pointwise: $v'_i = g(v^{(1)}_i, v^{(2)}_i)$.
+
+Zips two vectors through the `Float` interpreter of the given `BinaryOp`. -/
 def evalBinaryVec (op : BinaryOp) (v₁ v₂ : Vector Float n) : Vector Float n :=
   v₁.zipWith op.evalFloat v₂
 
-/-- Evaluate select (elementwise conditional). -/
+/-- Elementwise conditional: $v'_i = \begin{cases} t_i & c_i \neq 0 \\ f_i & c_i = 0 \end{cases}$.
+
+Selects from `ifTrue` where `cond` is nonzero, from `ifFalse` otherwise. -/
 def evalSelectVec (cond ifTrue ifFalse : Vector Float n) : Vector Float n :=
   Vector.ofFn fun i => if cond[i] != 0.0 then ifTrue[i] else ifFalse[i]
 
-/-- Broadcast a vector from shape s₁ to shape s₂. -/
+/-- Broadcast from shape $s_1$ to $s_2$: dimensions of size $1$ are replicated.
+
+Each output position maps back to an input position by clamping axes of size $1$
+to index $0$, thereby "stretching" singleton dimensions to match the target shape. -/
 def broadcastVec (s₁ s₂ : Shape) (v : Vector Float s₁.product) : Vector Float s₂.product :=
   Vector.ofFn fun outIdx =>
     let outMulti := linearToMulti s₂ outIdx.val
@@ -38,7 +49,9 @@ def broadcastVec (s₁ s₂ : Shape) (v : Vector Float s₁.product) : Vector Fl
     let inLin := multiToLinear s₁ inMulti
     if h : inLin < s₁.product then v[inLin] else 0.0
 
-/-- Slice a vector. -/
+/-- Extract a slice: $v'_\mathbf{i} = v_{\mathbf{start} + \mathbf{i}}$ for $\mathbf{i} \in [0, \mathbf{size})$.
+
+Copies a contiguous sub-block of the input tensor, offset by `starts` with extent `sizes`. -/
 def sliceVec (s : Shape) (starts sizes : List Nat) (v : Vector Float s.product)
     : Vector Float (Shape.product sizes) :=
   Vector.ofFn fun outIdx =>
@@ -47,7 +60,11 @@ def sliceVec (s : Shape) (starts sizes : List Nat) (v : Vector Float s.product)
     let inLin := multiToLinear s inMulti
     if h : inLin < s.product then v[inLin] else 0.0
 
-/-- Pad a vector. -/
+/-- Pad a tensor with a fill value, adding $\operatorname{lo}_k$ and $\operatorname{hi}_k$
+elements along each axis $k$.
+
+Output positions that fall within the padding region are filled with `fillVal`;
+those inside the original extent are copied from the input. -/
 def padVec (s : Shape) (padding : List (Nat × Nat)) (fillVal : Float)
     (v : Vector Float s.product) : Vector Float (Shape.padShape s padding).product :=
   let outShape := Shape.padShape s padding
@@ -70,7 +87,11 @@ where
         | some rest => some ((o - lo) :: rest)
         | none => none
 
-/-- Concatenate two vectors along an axis. -/
+/-- Concatenate two tensors along axis $k$.
+
+The output shape matches both inputs except along axis $k$, where the
+dimension equals $d^{(1)}_k + d^{(2)}_k$. Output indices with axis coordinate
+below $d^{(1)}_k$ read from $v_1$; the rest read from $v_2$ (shifted). -/
 def concatVec (s₁ s₂ : Shape) (axis : Fin s₁.length) (v₁ : Vector Float s₁.product)
     (v₂ : Vector Float s₂.product) : Vector Float (Shape.concatShape s₁ s₂ axis).product :=
   let outShape := Shape.concatShape s₁ s₂ axis
@@ -92,7 +113,11 @@ where
     | x :: xs, 0 => f x :: xs
     | x :: xs, n + 1 => x :: mapAt xs n f
 
-/-- Gather along an axis. -/
+/-- Gather elements along axis $k$ using an index vector.
+
+The output has the same shape as the input except axis $k$ is replaced by
+the number of indices. For each output position, the axis-$k$ coordinate is
+looked up in the `indices` vector to determine the source position. -/
 def gatherVec (s : Shape) (axis : Fin s.length) (indices : Vector Nat numIdx)
     (v : Vector Float s.product) : Vector Float (Shape.gatherShape s axis numIdx).product :=
   let outShape := Shape.gatherShape s axis numIdx
@@ -110,7 +135,11 @@ where
     | _ :: xs, 0 => val :: xs
     | x :: xs, n + 1 => x :: setAt xs n val
 
-/-- Transpose (generalized permutation). -/
+/-- Permute dimensions according to $\pi$: output at multi-index $\mathbf{j}$ reads
+input at $\pi^{-1}(\mathbf{j})$.
+
+Implements a generalized transpose by building the input multi-index from the
+output multi-index using the inverse of the permutation `perm`. -/
 def permuteVec (s : Shape) (perm : Vector (Fin s.length) s.length)
     (v : Vector Float s.product) : Vector Float (Shape.permuteShape s perm).product :=
   let outShape := Shape.permuteShape s perm
@@ -132,7 +161,11 @@ where
     | _ :: xs, 0 => val :: xs
     | x :: xs, n + 1 => x :: setAt xs n val
 
-/-- Reduce along an axis using a reduce op. -/
+/-- Reduce along axis $k$ with operation $\oplus$:
+$y_{\ldots} = \bigoplus_{i=0}^{d_k-1} x_{\ldots,i,\ldots}$.
+
+The output shape is the input shape with axis $k$ removed. For each output
+position, the operation folds over all slices along the reduced axis. -/
 def reduceVec (op : ReduceOp) (s : Shape) (axis : Fin s.length)
     (v : Vector Float s.product) : Vector Float (s.removeAt axis).product :=
   let outShape := s.removeAt axis
@@ -161,7 +194,11 @@ where
     | _ :: xs, 0 => val :: xs
     | x :: xs, n + 1 => x :: setAt xs n val
 
-/-- Scan (cumulative op) along an axis. -/
+/-- Cumulative scan along axis $k$:
+$y_{\ldots,j,\ldots} = \bigoplus_{i=0}^{j} x_{\ldots,i,\ldots}$.
+
+The output shape equals the input shape. Each element at axis position $j$
+is the running fold of all elements at positions $0, \ldots, j$. -/
 def scanVec (op : ReduceOp) (s : Shape) (axis : Fin s.length)
     (v : Vector Float s.product) : Vector Float s.product :=
   let axisSize := List.getD s axis.val 1
@@ -191,7 +228,13 @@ where
     | [], _, _ => none
     | y :: ys, x, i => if x == y then some i else go ys x (i + 1)
 
-/-- Evaluate einsum contraction. -/
+/-- Einstein summation: $C_\mathbf{o} = \sum_\mathbf{c} A_{\mathbf{a}(\mathbf{o},\mathbf{c})} \cdot B_{\mathbf{b}(\mathbf{o},\mathbf{c})}$
+where $\mathbf{c}$ ranges over contracted labels.
+
+Each output element is computed by iterating over all combinations of the
+contracted (summed-over) indices, multiplying the corresponding elements
+of $A$ and $B$, and accumulating the sum. Subscript lists `subsA`, `subsB`,
+`subsOut` specify which labels appear in each operand and the output. -/
 def einsumVec (subsA subsB subsOut : List Nat)
     (sA sB sOut : Shape)
     (vA : Vector Float sA.product) (vB : Vector Float sB.product)
@@ -234,7 +277,12 @@ end Lithe
 
 namespace TensorExpr
 
-/-- Evaluate a symbolic tensor expression to a flat vector (Float specialization). -/
+/-- Evaluate a closed `Float` tensor expression to a flat `Vector`,
+recursively interpreting all constructors.
+
+Traverses the `TensorExpr` GADT bottom-up and produces a concrete
+`Vector Float s.product`. Panics on unbound variables; use `evalWith`
+when the expression contains `.var` nodes. -/
 def eval : TensorExpr Float s → Vector Float s.product
   | .literal _ v        => v
   | .fill _ a           => Vector.replicate s.product a
@@ -254,7 +302,12 @@ def eval : TensorExpr Float s → Vector Float s.product
   | .scan op ax e       => Lithe.scanVec op _ ax e.eval
   | .einsum sA sB sO eA eB _ => Lithe.einsumVec sA sB sO _ _ _ eA.eval eB.eval
 
-/-- Evaluate with an environment for variable bindings. -/
+/-- Evaluate with an environment $\Gamma$ for variable bindings; returns `Except`
+for unbound variables.
+
+Like `eval`, but resolves `.var name s` nodes by looking up `name` in the
+supplied `Env Float`. Returns `Except.error` with a diagnostic message when
+a variable is missing or its shape does not match. -/
 def evalWith (env : Env Float) : TensorExpr Float s → Except String (Vector Float s.product)
   | .literal _ v        => .ok v
   | .fill _ a           => .ok (Vector.replicate s.product a)

@@ -8,22 +8,24 @@ import Lithe.Env
 import Lithe.Eval
 import Lithe.Smart
 
-/-- A module takes an input tensor expression and produces an output expression.
-    It also declares its learnable parameters. -/
+/-- A neural network module mapping input tensors of shape $s_{\text{in}}$ to output tensors
+    of shape $s_{\text{out}}$, with declared learnable parameters. -/
 structure Module (α : Type) [Scalar α] (sIn sOut : Shape) where
-  /-- Build the forward computation graph. -/
+  /-- Build the forward computation graph: $T_{\text{out}} = f(T_{\text{in}})$. -/
   forward : TensorExpr α sIn → TensorExpr α sOut
-  /-- Declared parameter names and shapes. -/
+  /-- Declared learnable parameters as $(name, shape)$ pairs. -/
   params  : List (String × Shape)
 
 namespace Module
 
-/-- Compose two modules sequentially. -/
+/-- Sequential composition of two modules: $(m_2 \circ m_1)(x) = m_2(m_1(x))$.
+    Parameters from both modules are concatenated. -/
 def compose [Scalar α] (m1 : Module α s1 s2) (m2 : Module α s2 s3) : Module α s1 s3 where
   forward x := m2.forward (m1.forward x)
   params := m1.params ++ m2.params
 
-/-- Run a module: given an env and input data, produce output. -/
+/-- Execute a module: evaluate the forward graph given environment $\Gamma$ and
+    concrete input data. Returns the output tensor as a flat vector. -/
 def run (m : Module Float sIn sOut) (env : Env Float) (input : Vector Float sIn.product)
     : Except String (Vector Float sOut.product) :=
   let inputExpr := TensorExpr.literal sIn input
@@ -31,7 +33,9 @@ def run (m : Module Float sIn sOut) (env : Env Float) (input : Vector Float sIn.
 
 /-! ### Example layers -/
 
-/-- Linear layer: y = x @ W + b, where x : [inDim], W : [inDim, outDim], b : [outDim]. -/
+/-- Fully connected linear layer: $y = xW + b$ where $W \in \mathbb{R}^{d_{\text{in}} \times d_{\text{out}}}$
+    and $b \in \mathbb{R}^{d_{\text{out}}}$. The input is reshaped to a row vector for matrix
+    multiplication, then the bias is added elementwise. -/
 def linear (inDim outDim : Nat) (name : String) : Module Float [inDim] [outDim] where
   forward x :=
     let w := TensorExpr.var (name ++ ".weight") [inDim, outDim]
@@ -43,12 +47,13 @@ def linear (inDim outDim : Nat) (name : String) : Module Float [inDim] [outDim] 
     y1 + b
   params := [(name ++ ".weight", [inDim, outDim]), (name ++ ".bias", [outDim])]
 
-/-- ReLU activation (no parameters). -/
+/-- ReLU activation layer (no learnable parameters): $y_i = \max(0, x_i)$. -/
 def reluLayer [Scalar α] (s : Shape) : Module α s s where
   forward x := Tensor.relu x
   params := []
 
-/-- Simple MLP: linear → relu → linear. -/
+/-- Two-layer MLP: $\operatorname{linear}_2(\operatorname{relu}(\operatorname{linear}_1(x)))$.
+    Composes a linear layer, a ReLU activation, and a second linear layer. -/
 def mlp (inDim hiddenDim outDim : Nat) (name : String) : Module Float [inDim] [outDim] :=
   compose
     (compose (linear inDim hiddenDim (name ++ ".layer1")) (reluLayer [hiddenDim]))
