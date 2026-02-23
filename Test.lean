@@ -578,6 +578,299 @@ def modulePipelineTests : IO (List TestResult) := do
 
   return results
 
+/-! ### CPU Backend Extended tests (transpose, broadcast, slice, reduce, einsum) -/
+
+def cpuExtendedTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- Transpose via CPU backend: [2,3] → [3,2]
+  let a : TensorExpr Float [2, 3] := .literal [2, 3] #v[1, 2, 3, 4, 5, 6]
+  let aT := Tensor.transpose2D a
+  let plan := Lithe.Backend.TensorExpr.toExecPlan aT
+  match plan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: transpose [2,3]->[3,2]"
+      result.toList [1, 4, 2, 5, 3, 6]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: transpose [2,3]->[3,2]" e]
+
+  -- Broadcast via CPU backend: [1,3] → [2,3]
+  let b1 : TensorExpr Float [1, 3] := .literal [1, 3] #v[10, 20, 30]
+  let bBcast := TensorExpr.broadcast b1 [2, 3] sorry
+  let bPlan := Lithe.Backend.TensorExpr.toExecPlan bBcast
+  match bPlan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: broadcast [1,3]->[2,3]"
+      result.toList [10, 20, 30, 10, 20, 30]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: broadcast [1,3]->[2,3]" e]
+
+  -- Slice via CPU backend: [4,3] slice [(1,2),(0,3)]
+  let t : TensorExpr Float [4, 3] := .literal [4, 3] #v[1,2,3, 4,5,6, 7,8,9, 10,11,12]
+  let sliced := Tensor.sliceWith t [(1, 2), (0, 3)]
+  let slicePlan := Lithe.Backend.TensorExpr.toExecPlan sliced
+  match slicePlan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: slice [4,3]->[(1,2),(0,3)]"
+      result.toList [4, 5, 6, 7, 8, 9]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: slice [4,3]->[(1,2),(0,3)]" e]
+
+  -- Reduce sum via CPU backend: [2,3] → [3]
+  let sumAxis0 := TensorExpr.reduce .sum ⟨0, by show 0 < 2; omega⟩ a
+  let reducePlan := Lithe.Backend.TensorExpr.toExecPlan sumAxis0
+  match reducePlan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: reduce sum axis=0"
+      result.toList [5, 7, 9]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: reduce sum axis=0" e]
+
+  -- Einsum (matmul) via CPU backend
+  let m1 : TensorExpr Float [2, 3] := .literal [2, 3] #v[1, 2, 3, 4, 5, 6]
+  let m2 : TensorExpr Float [3, 2] := .literal [3, 2] #v[1, 0, 0, 1, 1, 1]
+  let mmul := Tensor.matmul m1 m2
+  let mmulPlan := Lithe.Backend.TensorExpr.toExecPlan mmul
+  match mmulPlan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: einsum matmul"
+      result.toList [4, 5, 10, 11]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: einsum matmul" e]
+
+  -- Gather via CPU backend: gather rows 2,0 from [3,2]
+  let g : TensorExpr Float [3, 2] := .literal [3, 2] #v[10, 20, 30, 40, 50, 60]
+  let gathered := TensorExpr.gather g ⟨0, by show 0 < 2; omega⟩ #v[2, 0]
+  let gPlan := Lithe.Backend.TensorExpr.toExecPlan gathered
+  match gPlan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: gather rows 2,0"
+      result.toList [50, 60, 10, 20]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: gather rows 2,0" e]
+
+  -- Scan via CPU backend
+  let v5 : TensorExpr Float [5] := .literal [5] #v[1, 2, 3, 4, 5]
+  let cs := Tensor.cumsum ⟨0, by show 0 < 1; omega⟩ v5
+  let csPlan := Lithe.Backend.TensorExpr.toExecPlan cs
+  match csPlan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: scan cumsum"
+      result.toList [1, 3, 6, 10, 15]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: scan cumsum" e]
+
+  -- Concat via CPU backend
+  let c1 : TensorExpr Float [2, 2] := .literal [2, 2] #v[1, 2, 3, 4]
+  let c2 : TensorExpr Float [2, 2] := .literal [2, 2] #v[5, 6, 7, 8]
+  let catted := TensorExpr.concat c1 c2 ⟨0, by show 0 < 2; omega⟩ sorry
+  let catPlan := Lithe.Backend.TensorExpr.toExecPlan catted
+  match catPlan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: concat axis=0"
+      result.toList [1, 2, 3, 4, 5, 6, 7, 8]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: concat axis=0" e]
+
+  -- Pad via CPU backend
+  let p : TensorExpr Float [2, 2] := .literal [2, 2] #v[1, 2, 3, 4]
+  let padded := TensorExpr.pad p [(1, 1), (0, 0)] 0.0 sorry
+  let padPlan := Lithe.Backend.TensorExpr.toExecPlan padded
+  match padPlan.execute with
+  | .ok result =>
+    results := results ++ [← assertListClose "cpu ext: pad"
+      result.toList [0, 0, 1, 2, 3, 4, 0, 0]]
+  | .error e =>
+    results := results ++ [mkFail "cpu ext: pad" e]
+
+  return results
+
+/-! ### Autodiff Extended tests -/
+
+def autodiffExtendedTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- Einsum gradient: matmul grad should produce non-empty grads for both inputs
+  let wVar : TensorExpr Float [3, 2] := .var "w" [3, 2]
+  let xLit : TensorExpr Float [2, 3] := .literal [2, 3] #v[1, 2, 3, 4, 5, 6]
+  let mmul := Tensor.matmul xLit wVar
+  -- Reduce to scalar: sum all elements
+  let sum0 := TensorExpr.reduce .sum ⟨0, by show 0 < 2; omega⟩ mmul
+  let loss := TensorExpr.reduce .sum ⟨0, by show 0 < 1; omega⟩ sum0
+  let grads := loss.grad
+
+  let hasW := grads.any fun p => p.1 == "w"
+  results := results ++ [← assertTrue "autodiff ext: matmul grad has 'w'" hasW
+    "gradient map does not contain variable 'w'"]
+
+  -- Check gradient for w has correct shape [3, 2]
+  match grads.find? fun p => p.1 == "w" with
+  | some (_, ⟨shape, _⟩) =>
+    results := results ++ [← assertEq "autodiff ext: matmul grad 'w' shape" shape [3, 2]]
+  | none =>
+    results := results ++ [mkFail "autodiff ext: matmul grad 'w' shape" "variable 'w' not in grads"]
+
+  -- Reduce sum gradient: grad of sum(x) should broadcast back
+  let xVar : TensorExpr Float [3] := .var "x" [3]
+  let sumExpr := TensorExpr.reduce .sum ⟨0, by show 0 < 1; omega⟩ xVar
+  let sumGrads := sumExpr.grad
+  let hasX := sumGrads.any fun p => p.1 == "x"
+  results := results ++ [← assertTrue "autodiff ext: reduce sum grad has 'x'" hasX]
+
+  -- Check that gradient evaluates correctly: d/dx sum(x) = [1, 1, 1]
+  match sumGrads.find? fun p => p.1 == "x" with
+  | some (_, ⟨_, gradExpr⟩) =>
+    let env : Env Float := [("x", ⟨[3], #v[2.0, 3.0, 4.0]⟩)]
+    match gradExpr.evalWith env with
+    | .ok result =>
+      results := results ++ [← assertListClose "autodiff ext: reduce sum grad values"
+        result.toList [1.0, 1.0, 1.0]]
+    | .error e =>
+      results := results ++ [mkFail "autodiff ext: reduce sum grad values" e]
+  | none =>
+    results := results ++ [mkFail "autodiff ext: reduce sum grad values" "no 'x' in grads"]
+
+  -- Broadcast gradient: grad through broadcast should reduce back
+  let bVar : TensorExpr Float [1, 3] := .var "b" [1, 3]
+  let bBcast := TensorExpr.broadcast bVar [2, 3] sorry
+  let bSum0 := TensorExpr.reduce .sum ⟨0, by show 0 < 2; omega⟩ bBcast
+  let bSum1 := TensorExpr.reduce .sum ⟨0, by show 0 < 1; omega⟩ bSum0
+  let bGrads := bSum1.grad
+  let hasB := bGrads.any fun p => p.1 == "b"
+  results := results ++ [← assertTrue "autodiff ext: broadcast grad has 'b'" hasB]
+
+  return results
+
+/-! ### NN Layer tests -/
+
+def nnLayerTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- GELU: check values at specific points
+  let x : TensorExpr Float [4] := .literal [4] #v[-1.0, 0.0, 1.0, 2.0]
+  let geluResult := NN.gelu x
+  let geluVals := geluResult.eval.toList
+  -- GELU(-1) ≈ -0.1588, GELU(0) = 0, GELU(1) ≈ 0.8412, GELU(2) ≈ 1.9545
+  results := results ++ [← assertClose "nn: gelu(-1)" (geluVals.getD 0 0) (-0.1588) 0.01]
+  results := results ++ [← assertClose "nn: gelu(0)" (geluVals.getD 1 0) 0.0 0.001]
+  results := results ++ [← assertClose "nn: gelu(1)" (geluVals.getD 2 0) 0.8412 0.01]
+  results := results ++ [← assertClose "nn: gelu(2)" (geluVals.getD 3 0) 1.9545 0.01]
+
+  -- Softmax: row sums should be ~1.0
+  let logits : TensorExpr Float [2, 3] := .literal [2, 3] #v[1, 2, 3, 4, 5, 6]
+  let smResult := NN.softmax2D 2 3 logits
+  let smVals := smResult.eval.toList
+  let row0Sum := (smVals.getD 0 0) + (smVals.getD 1 0) + (smVals.getD 2 0)
+  let row1Sum := (smVals.getD 3 0) + (smVals.getD 4 0) + (smVals.getD 5 0)
+  results := results ++ [← assertClose "nn: softmax row0 sum=1" row0Sum 1.0 0.001]
+  results := results ++ [← assertClose "nn: softmax row1 sum=1" row1Sum 1.0 0.001]
+
+  -- Layer norm: output should have mean≈0 and var≈1 for each row
+  let lnInput : TensorExpr Float [2, 4] := .literal [2, 4] #v[1, 2, 3, 4, 5, 6, 7, 8]
+  let env : Env Float := [
+    ("test_ln.weight", ⟨[4], #v[1, 1, 1, 1]⟩),
+    ("test_ln.bias",   ⟨[4], #v[0, 0, 0, 0]⟩)
+  ]
+  let lnResult := NN.layerNorm 2 4 "test_ln" lnInput
+  match lnResult.evalWith env with
+  | .ok result =>
+    let vals := result.toList
+    -- Row 0 mean should be ≈ 0
+    let mean0 := ((vals.getD 0 0) + (vals.getD 1 0) + (vals.getD 2 0) + (vals.getD 3 0)) / 4.0
+    results := results ++ [← assertClose "nn: layernorm row0 mean≈0" mean0 0.0 0.01]
+    -- Row 0 var should be ≈ 1
+    let var0 := ((vals.getD 0 0) * (vals.getD 0 0) + (vals.getD 1 0) * (vals.getD 1 0) +
+                 (vals.getD 2 0) * (vals.getD 2 0) + (vals.getD 3 0) * (vals.getD 3 0)) / 4.0
+    results := results ++ [← assertClose "nn: layernorm row0 var≈1" var0 1.0 0.1]
+  | .error e =>
+    results := results ++ [mkFail "nn: layernorm output" e]
+
+  -- Embedding: gather should select correct rows
+  let embEnv : Env Float := [
+    ("emb.weight", ⟨[5, 3], #v[0,0,0, 1,1,1, 2,2,2, 3,3,3, 4,4,4]⟩)
+  ]
+  let emb := NN.embedding 5 3 "emb" [2, 0, 4]
+  match emb.evalWith embEnv with
+  | .ok result =>
+    results := results ++ [← assertListClose "nn: embedding lookup"
+      result.toList [2,2,2, 0,0,0, 4,4,4]]
+  | .error e =>
+    results := results ++ [mkFail "nn: embedding lookup" e]
+
+  return results
+
+/-! ### Optimizer tests -/
+
+def optimizerTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- Adam step moves parameters
+  let env : Env Float := [
+    ("w", ⟨[3], #v[1.0, 2.0, 3.0]⟩)
+  ]
+  let gradEnv : Env Float := [
+    ("w", ⟨[3], #v[0.1, 0.2, 0.3]⟩)
+  ]
+  let config : Optim.AdamConfig := {}
+  let state := Optim.AdamState.init [("w", [3])]
+  let (newEnv, newState) := Optim.adamStep config env gradEnv state
+
+  -- Parameters should have changed
+  match newEnv.find? (fun p => p.1 == "w") with
+  | some (_, td) =>
+    let newVals := td.data.toList
+    -- After one Adam step, params should decrease (positive gradient → decrease)
+    results := results ++ [← assertTrue "optim: adam step changes params"
+      ((newVals.getD 0 0) != 1.0)]
+    results := results ++ [← assertTrue "optim: adam step decreases param"
+      ((newVals.getD 0 0) < 1.0) "param should decrease with positive gradient"]
+  | none =>
+    results := results ++ [mkFail "optim: adam step" "w not in env after step"]
+
+  -- State should have incremented step
+  results := results ++ [← assertEq "optim: adam state step" newState.step 1]
+
+  return results
+
+/-! ### Safetensors parser tests -/
+
+def safetensorsTests : IO (List TestResult) := do
+  let mut results : List TestResult := []
+
+  -- JSON parser test
+  let jsonStr := "{\"tensor1\": {\"dtype\": \"F32\", \"shape\": [2, 3], \"data_offsets\": [0, 24]}}"
+  match Safetensors.parseJson jsonStr with
+  | some (.obj kvs) =>
+    results := results ++ [← assertTrue "safetensors: json parse object"
+      (kvs.length == 1)]
+    match kvs.head? with
+    | some ("tensor1", .obj fields) =>
+      results := results ++ [← assertTrue "safetensors: json has dtype"
+        (fields.any fun p => p.1 == "dtype")]
+      results := results ++ [← assertTrue "safetensors: json has shape"
+        (fields.any fun p => p.1 == "shape")]
+    | _ =>
+      results := results ++ [mkFail "safetensors: json parse tensor" "unexpected structure"]
+  | some _ =>
+    results := results ++ [mkFail "safetensors: json parse" "expected object"]
+  | none =>
+    results := results ++ [mkFail "safetensors: json parse" "parse returned none"]
+
+  -- Float32 decode test
+  -- IEEE 754: 1.0 = 0x3F800000 = bytes [0x00, 0x00, 0x80, 0x3F] in LE
+  let oneFloat := Safetensors.float32FromBytes 0x00 0x00 0x80 0x3F
+  results := results ++ [← assertClose "safetensors: decode float32 1.0" oneFloat 1.0 0.001]
+
+  -- IEEE 754: -2.0 = 0xC0000000 = bytes [0x00, 0x00, 0x00, 0xC0] in LE
+  let negTwoFloat := Safetensors.float32FromBytes 0x00 0x00 0x00 0xC0
+  results := results ++ [← assertClose "safetensors: decode float32 -2.0" negTwoFloat (-2.0) 0.001]
+
+  -- IEEE 754: 0.5 = 0x3F000000 = bytes [0x00, 0x00, 0x00, 0x3F] in LE
+  let halfFloat := Safetensors.float32FromBytes 0x00 0x00 0x00 0x3F
+  results := results ++ [← assertClose "safetensors: decode float32 0.5" halfFloat 0.5 0.001]
+
+  return results
+
 /-! ### Runner -/
 
 def main : IO Unit := do
@@ -597,7 +890,12 @@ def main : IO Unit := do
     ("Slicing",        slicingTests),
     ("Named Slicing",  namedSlicingTests),
     ("Einsum",         einsumTests),
-    ("Module Pipeline", modulePipelineTests)
+    ("Module Pipeline", modulePipelineTests),
+    ("CPU Extended",   cpuExtendedTests),
+    ("Autodiff Extended", autodiffExtendedTests),
+    ("NN Layers",      nnLayerTests),
+    ("Optimizer",      optimizerTests),
+    ("Safetensors",    safetensorsTests)
   ]
 
   let mut totalPassed := 0

@@ -21,3 +21,7 @@ root = "Main"
 [[lean_exe]]
 name = "test"
 root = "Test"
+
+[[lean_exe]]
+name = "gpt2"
+root = "Examples.GPT2"

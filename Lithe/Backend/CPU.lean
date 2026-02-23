@@ -4,6 +4,7 @@
 import Lithe.Shape
 import Lithe.Scalar
 import Lithe.Ops
+import Lithe.Index
 import Lithe.Tensor
 import Lithe.Env
 import Lithe.Eval
@@ -61,6 +62,28 @@ end FlattenState
 
 private def getBuffer (buffers : Array (Array Float)) (i : Nat) : Array Float :=
   if h : i < buffers.size then buffers[i] else #[]
+
+private def getNodeShape (nodes : Array DagNode) (i : Nat) : Shape :=
+  if h : i < nodes.size then nodes[i].shape else []
+
+private def setAt (l : List Nat) (pos val : Nat) : List Nat :=
+  match l, pos with
+  | [], _ => []
+  | _ :: xs, 0 => val :: xs
+  | x :: xs, n + 1 => x :: setAt xs n val
+
+private def insertAt (l : List Nat) (pos val : Nat) : List Nat :=
+  match l, pos with
+  | xs, 0 => val :: xs
+  | [], _ => [val]
+  | x :: xs, n + 1 => x :: insertAt xs n val
+
+private def findIdx (l : List Nat) (x : Nat) : Option Nat :=
+  go l x 0
+where
+  go : List Nat → Nat → Nat → Option Nat
+    | [], _, _ => none
+    | y :: ys, x, i => if x == y then some i else go ys x (i + 1)
 
 /-- Flatten a `TensorExpr` tree into a linear DAG, converting tree references
     to integer node indices. Returns the root node index and the accumulated state. -/
@@ -128,7 +151,7 @@ def TensorExpr.toExecPlan (e : TensorExpr Float s) : ExecPlan :=
 
 /-- Execute a single DAG node given already-computed buffers. -/
 private def executeNode (node : DagNode) (buffers : Array (Array Float))
-    (env : Env Float) : Except String (Array Float) :=
+    (nodes : Array DagNode) (env : Env Float) : Except String (Array Float) :=
   match node.op with
   | .literal data => .ok data
   | .fill val size => .ok (Array.replicate size val)
@@ -152,8 +175,187 @@ private def executeNode (node : DagNode) (buffers : Array (Array Float))
     let bf := getBuffer buffers fId
     .ok (bc.mapFinIdx fun i v _ => if v != 0.0 then bt.getD i 0.0 else bf.getD i 0.0)
   | .reshape inId => .ok (getBuffer buffers inId)
-  | _ =>
-    .error "CPU backend: op not yet implemented"
+  | .transpose inId perm =>
+    let inBuf := getBuffer buffers inId
+    let inShape := getNodeShape nodes inId
+    let outShape := node.shape
+    let outSize := Shape.product outShape
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti outShape idx
+        -- Build input multi-index: input[perm[i]] = outMulti[i]
+        let mut inMulti := List.replicate inShape.length 0
+        for i in [:perm.length] do
+          let p := perm.getD i 0
+          inMulti := setAt inMulti p (outMulti.getD i 0)
+        let inLin := Lithe.multiToLinear inShape inMulti
+        out := out.set! idx (inBuf.getD inLin 0.0)
+      return out
+  | .broadcast inId srcShape tgtShape =>
+    let inBuf := getBuffer buffers inId
+    let outSize := Shape.product tgtShape
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti tgtShape idx
+        let inMulti := List.zipWith (fun d o => if d == 1 then 0 else o) srcShape outMulti
+        let inLin := Lithe.multiToLinear srcShape inMulti
+        out := out.set! idx (inBuf.getD inLin 0.0)
+      return out
+  | .slice inId starts sizes =>
+    let inBuf := getBuffer buffers inId
+    let inShape := getNodeShape nodes inId
+    let outSize := Shape.product sizes
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti sizes idx
+        let inMulti := List.zipWith (· + ·) starts outMulti
+        let inLin := Lithe.multiToLinear inShape inMulti
+        out := out.set! idx (inBuf.getD inLin 0.0)
+      return out
+  | .pad inId padding fillVal =>
+    let inBuf := getBuffer buffers inId
+    let inShape := getNodeShape nodes inId
+    let outShape := node.shape
+    let outSize := Shape.product outShape
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti outShape idx
+        match goCheckPad inShape padding outMulti with
+        | some inMulti =>
+          let inLin := Lithe.multiToLinear inShape inMulti
+          out := out.set! idx (inBuf.getD inLin fillVal)
+        | none => out := out.set! idx fillVal
+      return out
+  | .concat lId rId axis =>
+    let lBuf := getBuffer buffers lId
+    let rBuf := getBuffer buffers rId
+    let lShape := getNodeShape nodes lId
+    let rShape := getNodeShape nodes rId
+    let outShape := node.shape
+    let outSize := Shape.product outShape
+    let dim₁ := lShape.getD axis 0
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti outShape idx
+        let axisIdx := outMulti.getD axis 0
+        if axisIdx < dim₁ then
+          let inLin := Lithe.multiToLinear lShape outMulti
+          out := out.set! idx (lBuf.getD inLin 0.0)
+        else
+          let inMulti := mapAtList outMulti axis (· - dim₁)
+          let inLin := Lithe.multiToLinear rShape inMulti
+          out := out.set! idx (rBuf.getD inLin 0.0)
+      return out
+  | .gather inId axis indices =>
+    let inBuf := getBuffer buffers inId
+    let inShape := getNodeShape nodes inId
+    let outShape := node.shape
+    let outSize := Shape.product outShape
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti outShape idx
+        let gatherIdx := outMulti.getD axis 0
+        let srcIdx := indices.getD gatherIdx 0
+        let inMulti := setAt outMulti axis srcIdx
+        let inLin := Lithe.multiToLinear inShape inMulti
+        out := out.set! idx (inBuf.getD inLin 0.0)
+      return out
+  | .reduce op axis inId =>
+    let inBuf := getBuffer buffers inId
+    let inShape := getNodeShape nodes inId
+    let outShape := node.shape
+    let outSize := Shape.product outShape
+    let axisSize := inShape.getD axis 1
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti outShape idx
+        let baseMulti := insertAt outMulti axis 0
+        let mut acc := op.identityFloat
+        for k in [:axisSize] do
+          let inMulti := setAt baseMulti axis k
+          let inLin := Lithe.multiToLinear inShape inMulti
+          acc := op.combineFloat acc (inBuf.getD inLin 0.0)
+        out := out.set! idx acc
+      return out
+  | .scan op axis inId =>
+    let inBuf := getBuffer buffers inId
+    let inShape := getNodeShape nodes inId
+    let outSize := Shape.product inShape
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti inShape idx
+        let pos := outMulti.getD axis 0
+        let mut acc := op.identityFloat
+        for k in [:pos + 1] do
+          let inMulti := setAt outMulti axis k
+          let inLin := Lithe.multiToLinear inShape inMulti
+          acc := op.combineFloat acc (inBuf.getD inLin 0.0)
+        out := out.set! idx acc
+      return out
+  | .einsum subsA subsB subsOut lId rId =>
+    let lBuf := getBuffer buffers lId
+    let rBuf := getBuffer buffers rId
+    let sA := getNodeShape nodes lId
+    let sB := getNodeShape nodes rId
+    let sOut := node.shape
+    let outSize := Shape.product sOut
+    let allLabels := (subsA ++ subsB).eraseDups
+    let contractedLabels := allLabels.filter (!subsOut.contains ·)
+    let contractedDims := contractedLabels.map fun label =>
+      match findIdx subsA label with
+      | some idx => sA.getD idx 1
+      | none =>
+        match findIdx subsB label with
+        | some idx => sB.getD idx 1
+        | none => 1
+    let contractedProduct := contractedDims.foldl (· * ·) 1
+    .ok <| Id.run do
+      let mut out := Array.replicate outSize 0.0
+      for idx in [:outSize] do
+        let outMulti := Lithe.linearToMulti sOut idx
+        let labelMap := List.zip subsOut outMulti
+        let mut sum : Float := 0.0
+        for cIdx in [:contractedProduct] do
+          let cMulti := Lithe.linearToMulti contractedDims cIdx
+          let fullMap := labelMap ++ List.zip contractedLabels cMulti
+          let aMulti := subsA.map fun label =>
+            match fullMap.find? (fun p => p.1 == label) with
+            | some (_, v) => v
+            | none => 0
+          let bMulti := subsB.map fun label =>
+            match fullMap.find? (fun p => p.1 == label) with
+            | some (_, v) => v
+            | none => 0
+          let aLin := Lithe.multiToLinear sA aMulti
+          let bLin := Lithe.multiToLinear sB bMulti
+          let aVal := lBuf.getD aLin 0.0
+          let bVal := rBuf.getD bLin 0.0
+          sum := sum + aVal * bVal
+        out := out.set! idx sum
+      return out
+where
+  goCheckPad : List Nat → List (Nat × Nat) → List Nat → Option (List Nat)
+    | [], _, _ => some []
+    | _, [], _ => some []
+    | _, _, [] => some []
+    | d :: ds, (lo, _) :: ps, o :: os =>
+      if o < lo || o >= lo + d then none
+      else match goCheckPad ds ps os with
+        | some rest => some ((o - lo) :: rest)
+        | none => none
+  mapAtList (l : List Nat) (pos : Nat) (f : Nat → Nat) : List Nat :=
+    match l, pos with
+    | [], _ => []
+    | x :: xs, 0 => f x :: xs
+    | x :: xs, n + 1 => x :: mapAtList xs n f
 
 /-- Execute the DAG plan sequentially, computing each node's output buffer
     in topological order. Returns the final output buffer. -/
@@ -161,7 +363,7 @@ def ExecPlan.execute (plan : ExecPlan) (env : Env Float := Env.empty)
     : Except String (Array Float) := do
   let mut buffers : Array (Array Float) := #[]
   for node in plan.nodes do
-    let result ← executeNode node buffers env
+    let result ← executeNode node buffers plan.nodes env
     buffers := buffers.push result
   if h : plan.output < buffers.size then
     .ok buffers[plan.output]
