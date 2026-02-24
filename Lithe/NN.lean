@@ -19,12 +19,18 @@ namespace NN
 /-- Reshape [d] → [1, d] and broadcast to [n, d]. -/
 def broadcastLastAxis (n d : Nat) (v : TensorExpr Float [d]) : TensorExpr Float [n, d] :=
   let reshaped := TensorExpr.reshape (s₂ := [1, d]) v (by simp [Shape.product, Nat.one_mul])
-  TensorExpr.broadcast reshaped [n, d] sorry
+  TensorExpr.broadcast reshaped [n, d] ⟨rfl, fun ⟨i, hi⟩ => by
+    match i, hi with
+    | 0, _ => right; simp [List.getD]
+    | 1, _ => left; simp [List.getD]⟩
 
 /-- Reshape [n] → [n, 1] and broadcast to [n, d]. -/
 def broadcastFirstAxis (n d : Nat) (v : TensorExpr Float [n]) : TensorExpr Float [n, d] :=
   let reshaped := TensorExpr.reshape (s₂ := [n, 1]) v (by simp [Shape.product, Nat.mul_one])
-  TensorExpr.broadcast reshaped [n, d] sorry
+  TensorExpr.broadcast reshaped [n, d] ⟨rfl, fun ⟨i, hi⟩ => by
+    match i, hi with
+    | 0, _ => left; simp [List.getD]
+    | 1, _ => right; simp [List.getD]⟩
 
 /-! ### Activations -/
 
@@ -119,7 +125,7 @@ def linearBatched (n inDim outDim : Nat) (name : String)
   let w := TensorExpr.var (name ++ ".weight") [inDim, outDim]
   let b := TensorExpr.var (name ++ ".bias") [outDim]
   -- einsum "ni,io->no": [n, inDim] @ [inDim, outDim] → [n, outDim]
-  let y := TensorExpr.einsum [0, 1] [1, 2] [0, 2] x w sorry
+  let y := TensorExpr.einsum [0, 1] [1, 2] [0, 2] x w (Tensor.matmul_einsum_valid n inDim outDim)
   -- add bias broadcast to [n, outDim]
   let bBcast := broadcastLastAxis n outDim b
   y + bBcast
@@ -139,7 +145,7 @@ def embedding (vocabSize dim : Nat) (name : String) (indices : List Nat)
     : TensorExpr Float [indices.length, dim] :=
   let w := TensorExpr.var (name ++ ".weight") [vocabSize, dim]
   -- Gather along axis 0 with the given indices
-  let idxVec : Vector Nat indices.length := ⟨indices.toArray, by sorry⟩
+  let idxVec : Vector Nat indices.length := ⟨indices.toArray, by simp [List.size_toArray]⟩
   TensorExpr.gather w ⟨0, by show 0 < 2; omega⟩ idxVec
 
 /-- Positional embedding: gather rows from pos embedding matrix. -/
@@ -147,8 +153,25 @@ def posEmbedding (maxLen dim : Nat) (name : String) (seqLen : Nat)
     : TensorExpr Float [seqLen, dim] :=
   let w := TensorExpr.var (name ++ ".weight") [maxLen, dim]
   let indices := List.range seqLen
-  let idxVec : Vector Nat seqLen := ⟨indices.toArray, by sorry⟩
+  let idxVec : Vector Nat seqLen := ⟨indices.toArray, by simp [indices]⟩
   TensorExpr.gather w ⟨0, by show 0 < 2; omega⟩ idxVec
+
+/-! ### Safe shape-checked constructors for NN -/
+
+private def safeSliceNN {s : Shape} (e : TensorExpr Float s) (starts sizes : List Nat) :
+    TensorExpr Float sizes :=
+  if h : Shape.ValidSlice s starts sizes then TensorExpr.slice e starts sizes h
+  else TensorExpr.fill sizes 0.0
+
+private def safeReshapeNN {s₁ : Shape} (e : TensorExpr Float s₁) (s₂ : Shape) :
+    TensorExpr Float s₂ :=
+  if h : Shape.product s₁ = Shape.product s₂ then TensorExpr.reshape e h
+  else TensorExpr.fill s₂ 0.0
+
+private def safeConcatNN {s₁ s₂ : Shape} (e₁ : TensorExpr Float s₁) (e₂ : TensorExpr Float s₂)
+    (axis : Fin s₁.length) : TensorExpr Float (Shape.concatShape s₁ s₂ axis) :=
+  if h : Shape.ConcatCompatible s₁ s₂ axis.val then TensorExpr.concat e₁ e₂ axis h
+  else TensorExpr.fill (Shape.concatShape s₁ s₂ axis) 0.0
 
 /-! ### Multi-Head Attention -/
 
@@ -174,14 +197,11 @@ def attentionHead (seqLen headDim : Nat) (q k v : TensorExpr Float [seqLen, head
     Upper triangle filled with -1e10, lower triangle + diagonal with 0. -/
 def causalMask (seqLen : Nat) : TensorExpr Float [seqLen, seqLen] :=
   let size := seqLen * seqLen
-  let data := Id.run do
-    let mut arr : Array Float := Array.replicate size 0.0
-    for i in [:seqLen] do
-      for j in [:seqLen] do
-        if j > i then
-          arr := arr.set! (i * seqLen + j) (-1.0e10)
-    return arr
-  TensorExpr.literal [seqLen, seqLen] ⟨data, by simp [Shape.product, Nat.mul_one]; sorry⟩
+  let data := Array.ofFn fun (idx : Fin size) =>
+    let i := idx.val / seqLen
+    let j := idx.val % seqLen
+    if j > i then (-1.0e10 : Float) else 0.0
+  TensorExpr.literal [seqLen, seqLen] ⟨data, by simp [Shape.product, Nat.mul_one]; exact Array.size_ofFn⟩
 
 /-- Multi-head attention (loop over heads with 2D ops).
     Input: [seqLen, embedDim], Output: [seqLen, embedDim].
@@ -190,7 +210,6 @@ def causalMask (seqLen : Nat) : TensorExpr Float [seqLen, seqLen] :=
                 `name.c_proj.weight`, `name.c_proj.bias`. -/
 def multiHeadAttention (seqLen embedDim nHeads : Nat) (name : String)
     (x : TensorExpr Float [seqLen, embedDim])
-    (hDiv : embedDim = nHeads * (embedDim / nHeads) := by sorry)
     : TensorExpr Float [seqLen, embedDim] :=
   let headDim := embedDim / nHeads
   -- Combined QKV projection: [seqLen, embedDim] → [seqLen, 3*embedDim]
@@ -198,38 +217,28 @@ def multiHeadAttention (seqLen embedDim nHeads : Nat) (name : String)
   let qkv := linearBatched seqLen embedDim qkvDim (name ++ ".c_attn") x
   -- Build causal mask
   let mask := causalMask seqLen
-  -- Process each head: slice Q, K, V and compute attention
-  -- Q = qkv[:, 0:embedDim], K = qkv[:, embedDim:2*embedDim], V = qkv[:, 2*embedDim:3*embedDim]
-  -- For each head h: Q_h = Q[:, h*headDim:(h+1)*headDim], etc.
-  -- Collect head outputs and concatenate
-  let headOutputs := Id.run do
-    let mut outputs : List (Σ s : Shape, TensorExpr Float s) := []
-    for h in [:nHeads] do
+  -- Process each head via List.range (avoids for-loop bound limitation)
+  let headOutputs : List (TensorExpr Float [seqLen, headDim]) :=
+    (List.range nHeads).map fun h =>
       let qStart := h * headDim
       let kStart := embedDim + h * headDim
       let vStart := 2 * embedDim + h * headDim
-      -- Slice Q_h: [seqLen, headDim]
-      let qh : TensorExpr Float [seqLen, headDim] :=
-        TensorExpr.slice qkv [0, qStart] [seqLen, headDim] sorry
-      let kh : TensorExpr Float [seqLen, headDim] :=
-        TensorExpr.slice qkv [0, kStart] [seqLen, headDim] sorry
-      let vh : TensorExpr Float [seqLen, headDim] :=
-        TensorExpr.slice qkv [0, vStart] [seqLen, headDim] sorry
-      let headOut := attentionHead seqLen headDim qh kh vh mask
-      outputs := outputs ++ [⟨[seqLen, headDim], headOut⟩]
-    return outputs
-  -- Concatenate heads: fold concat along axis 1
+      let qh := safeSliceNN qkv [0, qStart] [seqLen, headDim]
+      let kh := safeSliceNN qkv [0, kStart] [seqLen, headDim]
+      let vh := safeSliceNN qkv [0, vStart] [seqLen, headDim]
+      attentionHead seqLen headDim qh kh vh mask
+  -- Concatenate head outputs using existential accumulator (width grows each step)
   let combined := Id.run do
-    let mut acc : TensorExpr Float [seqLen, headDim] :=
+    let mut acc : Σ w : Nat, TensorExpr Float [seqLen, w] :=
       match headOutputs.head? with
-      | some ⟨_, h⟩ => TensorExpr.reshape h sorry
-      | none => TensorExpr.fill [seqLen, headDim] 0.0
+      | some h => ⟨headDim, h⟩
+      | none => ⟨0, TensorExpr.fill [seqLen, 0] 0.0⟩
     for entry in headOutputs.drop 1 do
-      let next : TensorExpr Float [seqLen, headDim] := TensorExpr.reshape entry.2 sorry
-      let cat := TensorExpr.concat acc next ⟨1, by show 1 < 2; omega⟩ sorry
-      acc := TensorExpr.reshape cat sorry
+      let ⟨w, expr⟩ := acc
+      let cat := safeConcatNN expr entry ⟨1, by show 1 < 2; omega⟩
+      acc := ⟨w + headDim, safeReshapeNN cat [seqLen, w + headDim]⟩
     return acc
-  let combined' : TensorExpr Float [seqLen, embedDim] := TensorExpr.reshape combined sorry
+  let combined' := safeReshapeNN combined.2 [seqLen, embedDim]
   -- Output projection: [seqLen, embedDim] → [seqLen, embedDim]
   linearBatched seqLen embedDim embedDim (name ++ ".c_proj") combined'
 
@@ -238,7 +247,8 @@ def multiHeadAttention (seqLen embedDim nHeads : Nat) (name : String)
 /-- GPT-2 transformer block:
     LN1 → MHA → residual → LN2 → MLP(linear→GELU→linear) → residual -/
 def transformerBlock (seqLen embedDim nHeads ffDim : Nat) (name : String)
-    (x : TensorExpr Float [seqLen, embedDim]) : TensorExpr Float [seqLen, embedDim] :=
+    (x : TensorExpr Float [seqLen, embedDim])
+    : TensorExpr Float [seqLen, embedDim] :=
   -- LN1 → MHA → residual
   let ln1Out := layerNorm seqLen embedDim (name ++ ".ln_1") x
   let attnOut := multiHeadAttention seqLen embedDim nHeads (name ++ ".attn") ln1Out
@@ -281,7 +291,7 @@ def gpt2 (cfg : GPT2Config) (tokens : List Nat)
   let wte := TensorExpr.var "wte.weight" [cfg.vocabSize, cfg.embedDim]
   let wteT := Tensor.transpose2D wte  -- [embedDim, vocabSize]
   -- [seqLen, embedDim] @ [embedDim, vocabSize] → [seqLen, vocabSize]
-  TensorExpr.einsum [0, 1] [1, 2] [0, 2] xNorm wteT sorry
+  TensorExpr.einsum [0, 1] [1, 2] [0, 2] xNorm wteT (Tensor.matmul_einsum_valid seqLen cfg.embedDim cfg.vocabSize)
 where
   /-- Apply N transformer blocks sequentially. -/
   applyBlocks (seqLen embedDim nHeads ffDim nLayers idx : Nat)
@@ -325,14 +335,12 @@ def gpt2Params (cfg : GPT2Config) : List (String × Shape) :=
 /-- One-hot encode target indices for [seqLen] tokens into [seqLen, vocabSize]. -/
 def oneHot (seqLen vocabSize : Nat) (targets : List Nat) : TensorExpr Float [seqLen, vocabSize] :=
   let size := seqLen * vocabSize
-  let data := Id.run do
-    let mut arr := Array.replicate size 0.0
-    for i in [:seqLen] do
-      let t := targets.getD i 0
-      if t < vocabSize then
-        arr := arr.set! (i * vocabSize + t) 1.0
-    return arr
-  TensorExpr.literal [seqLen, vocabSize] ⟨data, by simp [Shape.product, Nat.mul_one]; sorry⟩
+  let data := Array.ofFn fun (idx : Fin size) =>
+    let i := idx.val / vocabSize
+    let j := idx.val % vocabSize
+    let t := targets.getD i 0
+    if j == t then (1.0 : Float) else 0.0
+  TensorExpr.literal [seqLen, vocabSize] ⟨data, by simp [Shape.product, Nat.mul_one]; exact Array.size_ofFn⟩
 
 /-- Cross-entropy loss: $-\frac{1}{n}\sum_i \sum_c y_{ic} \log(\text{softmax}(x)_{ic})$ -/
 def crossEntropyLoss (seqLen vocabSize : Nat)

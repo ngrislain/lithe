@@ -117,4 +117,8 @@ instance decIsEinsumValid (subsA subsB subsOut : List Nat) (sA sB sOut : Shape) 
     Decidable (IsEinsumValid subsA subsB subsOut sA sB sOut) := by
   unfold IsEinsumValid; exact inferInstance
 
+@[simp] theorem permuteShape_length (s : Shape) (perm : Vector (Fin s.length) s.length) :
+    (permuteShape s perm).length = s.length := by
+  simp [permuteShape]
+
 end Shape

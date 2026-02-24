@@ -143,18 +143,19 @@ def readUInt64LE (data : ByteArray) (offset : Nat) : UInt64 :=
 
 /-- Decode an array of float32 values from a byte slice. -/
 def decodeFloat32Array (data : ByteArray) (offset count : Nat) : Array Float :=
-  Id.run do
-    let mut arr := Array.replicate count 0.0
-    for i in [:count] do
-      let base := offset + i * 4
-      if base + 3 < data.size then
-        let f := float32FromBytes
-          (data.get! base)
-          (data.get! (base + 1))
-          (data.get! (base + 2))
-          (data.get! (base + 3))
-        arr := arr.set! i f
-    return arr
+  Array.ofFn fun (i : Fin count) =>
+    let base := offset + i.val * 4
+    if base + 3 < data.size then
+      float32FromBytes
+        (data.get! base)
+        (data.get! (base + 1))
+        (data.get! (base + 2))
+        (data.get! (base + 3))
+    else 0.0
+
+theorem decodeFloat32Array_size (data : ByteArray) (offset count : Nat) :
+    (decodeFloat32Array data offset count).size = count := by
+  simp [decodeFloat32Array, Array.size_ofFn]
 
 /-! ### Safetensors Loader -/
 
@@ -214,14 +215,15 @@ def loadSafetensors (path : System.FilePath) : IO (Env Float) := do
   let mut env : Env Float := []
   for tm in tensorMetas do
     if tm.dtype == "F32" || tm.dtype == "F16" then
-      let numElements := tm.shape.foldl (· * ·) 1
+      let numElements := Shape.product tm.shape
       let byteStart := dataOffset + tm.offset
-      let tensorData := if tm.dtype == "F32" then
-        decodeFloat32Array data byteStart numElements
-      else
-        -- F16: decode each 2-byte half-float (simplified: skip for now)
-        Array.replicate numElements 0.0
-      env := env ++ [(tm.name, ⟨tm.shape, ⟨tensorData, by sorry⟩⟩)]
+      let tensorVec : Vector Float numElements :=
+        if tm.dtype == "F32" then
+          ⟨decodeFloat32Array data byteStart numElements, decodeFloat32Array_size ..⟩
+        else
+          -- F16: decode each 2-byte half-float (simplified: skip for now)
+          ⟨Array.replicate numElements 0.0, Array.size_replicate ..⟩
+      env := env ++ [(tm.name, ⟨tm.shape, tensorVec⟩)]
   return env
 
 end Safetensors

@@ -60,7 +60,7 @@ private theorem matmul_einsum_output (m k n : Nat) :
   | 0, _ => left; exact ⟨⟨0, by decide⟩, by simp [List.getD]⟩
   | 1, _ => right; exact ⟨⟨1, by decide⟩, by simp [List.getD]⟩
 
-private theorem matmul_einsum_valid (m k n : Nat) :
+theorem matmul_einsum_valid (m k n : Nat) :
     IsEinsumValid [0, 1] [1, 2] [0, 2] [m, k] [k, n] [m, n] :=
   ⟨rfl, rfl, rfl, matmul_einsum_shared m k n, matmul_einsum_output m k n⟩
 
@@ -184,7 +184,14 @@ def head [Scalar α] (t : TensorExpr α (d :: rest)) (i : Nat)
   have hlen2 : sizes.length = (d :: rest).length := by simp [sizes]
   have hvalid : ∀ j : Fin (d :: rest).length,
       List.getD starts j.val 0 + List.getD sizes j.val 0 ≤ (d :: rest).get j := by
-    sorry
+    intro ⟨j, hj⟩
+    match j, hj with
+    | 0, _ => simp [starts, sizes, List.getD]; omega
+    | j + 1, hj =>
+      simp only [starts, sizes, List.getD, List.get]
+      simp only [List.length_cons] at hj
+      have hj' : j < rest.length := by omega
+      simp [List.getElem?_eq_getElem hj']
   have hprod : product (1 :: rest) = product rest := by
     simp [product, Nat.one_mul]
   let sliced := TensorExpr.slice t starts sizes ⟨hlen1, hlen2, hvalid⟩

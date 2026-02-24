@@ -596,7 +596,7 @@ def cpuExtendedTests : IO (List TestResult) := do
 
   -- Broadcast via CPU backend: [1,3] → [2,3]
   let b1 : TensorExpr Float [1, 3] := .literal [1, 3] #v[10, 20, 30]
-  let bBcast := TensorExpr.broadcast b1 [2, 3] sorry
+  let bBcast := TensorExpr.broadcast b1 [2, 3] (by decide)
   let bPlan := Lithe.Backend.TensorExpr.toExecPlan bBcast
   match bPlan.execute with
   | .ok result =>
@@ -663,7 +663,7 @@ def cpuExtendedTests : IO (List TestResult) := do
   -- Concat via CPU backend
   let c1 : TensorExpr Float [2, 2] := .literal [2, 2] #v[1, 2, 3, 4]
   let c2 : TensorExpr Float [2, 2] := .literal [2, 2] #v[5, 6, 7, 8]
-  let catted := TensorExpr.concat c1 c2 ⟨0, by show 0 < 2; omega⟩ sorry
+  let catted := TensorExpr.concat c1 c2 ⟨0, by show 0 < 2; omega⟩ (by decide)
   let catPlan := Lithe.Backend.TensorExpr.toExecPlan catted
   match catPlan.execute with
   | .ok result =>
@@ -674,7 +674,7 @@ def cpuExtendedTests : IO (List TestResult) := do
 
   -- Pad via CPU backend
   let p : TensorExpr Float [2, 2] := .literal [2, 2] #v[1, 2, 3, 4]
-  let padded := TensorExpr.pad p [(1, 1), (0, 0)] 0.0 sorry
+  let padded := TensorExpr.pad p [(1, 1), (0, 0)] 0.0 (by decide)
   let padPlan := Lithe.Backend.TensorExpr.toExecPlan padded
   match padPlan.execute with
   | .ok result =>
@@ -732,7 +732,7 @@ def autodiffExtendedTests : IO (List TestResult) := do
 
   -- Broadcast gradient: grad through broadcast should reduce back
   let bVar : TensorExpr Float [1, 3] := .var "b" [1, 3]
-  let bBcast := TensorExpr.broadcast bVar [2, 3] sorry
+  let bBcast := TensorExpr.broadcast bVar [2, 3] (by decide)
   let bSum0 := TensorExpr.reduce .sum ⟨0, by show 0 < 2; omega⟩ bBcast
   let bSum1 := TensorExpr.reduce .sum ⟨0, by show 0 < 1; omega⟩ bSum0
   let bGrads := bSum1.grad

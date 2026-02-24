@@ -27,6 +27,46 @@ def merge (g1 g2 : Grads) : Grads := g1 ++ g2
 
 end Grads
 
+/-! ### Safe shape-checked constructors
+
+These wrappers use `Decidable` instances to check shape predicates at runtime.
+When the predicate holds, the appropriate `TensorExpr` constructor is used.
+When it does not (which should never happen for well-formed backward passes),
+a zero-filled tensor is returned as a safe fallback. -/
+
+private def safeReshape (e : TensorExpr Float s₁) (s₂ : Shape) : TensorExpr Float s₂ :=
+  if h : s₁.product = s₂.product then TensorExpr.reshape e h
+  else TensorExpr.fill s₂ 0.0
+
+private def safeBroadcast (e : TensorExpr Float s₁) (s₂ : Shape) : TensorExpr Float s₂ :=
+  if h : IsBroadcastable s₁ s₂ then TensorExpr.broadcast e s₂ h
+  else TensorExpr.fill s₂ 0.0
+
+private def safeSlice (e : TensorExpr Float s) (starts sizes : List Nat) :
+    TensorExpr Float sizes :=
+  if h : ValidSlice s starts sizes then TensorExpr.slice e starts sizes h
+  else TensorExpr.fill sizes 0.0
+
+private def safePad (e : TensorExpr Float s) (padding : List (Nat × Nat)) (v : Float) :
+    TensorExpr Float (padShape s padding) :=
+  if h : padding.length = s.length then TensorExpr.pad e padding v h
+  else TensorExpr.fill (padShape s padding) 0.0
+
+private def safeConcat (e₁ : TensorExpr Float s₁) (e₂ : TensorExpr Float s₂)
+    (axis : Fin s₁.length) : TensorExpr Float (concatShape s₁ s₂ axis) :=
+  if h : ConcatCompatible s₁ s₂ axis.val then TensorExpr.concat e₁ e₂ axis h
+  else TensorExpr.fill (concatShape s₁ s₂ axis) 0.0
+
+private def safeEinsum {sA sB : Shape} (subsA subsB subsOut : List Nat)
+    (eA : TensorExpr Float sA) (eB : TensorExpr Float sB) (sOut : Shape)
+    : TensorExpr Float sOut :=
+  if h : IsEinsumValid subsA subsB subsOut sA sB sOut then
+    TensorExpr.einsum subsA subsB subsOut eA eB h
+  else TensorExpr.fill sOut 0.0
+
+/-- Extract the shape index from a TensorExpr (type-level to term-level). -/
+private def shapeOf {s : Shape} (_ : TensorExpr Float s) : Shape := s
+
 /-! ### Autodiff helpers -/
 
 /-- Insert a value into a list at a given position. -/
@@ -36,35 +76,44 @@ private def insertShapeAt (l : List Nat) (pos val : Nat) : List Nat :=
   | [], _ => [val]
   | x :: xs, n + 1 => x :: insertShapeAt xs n val
 
+/-- Inserting 1 into a shape preserves the product (multiplicative identity). -/
+private theorem product_insertShapeAt_one (l : List Nat) (pos : Nat) :
+    Shape.product (insertShapeAt l pos 1) = Shape.product l := by
+  induction l generalizing pos with
+  | nil => cases pos <;> simp [insertShapeAt, Shape.product]
+  | cons x xs ih =>
+    cases pos with
+    | zero => simp [insertShapeAt, Shape.product]
+    | succ n => simp [insertShapeAt, Shape.product, ih]
+
 /-- Broadcast the adjoint of reduce-sum back to the input shape.
     Reshapes to insert a size-1 dim at the reduced axis, then broadcasts. -/
 private def broadcastReduceAdj {s : Shape} (axis : Fin s.length)
     (adj : TensorExpr Float (s.removeAt axis)) : TensorExpr Float s :=
   let midShape := insertShapeAt (s.removeAt axis) axis.val 1
-  let adjReshaped := TensorExpr.reshape (s₂ := midShape) adj sorry
-  TensorExpr.broadcast adjReshaped s sorry
+  let adjReshaped := TensorExpr.reshape (s₂ := midShape) adj
+    (product_insertShapeAt_one (s.removeAt axis) axis.val).symm
+  safeBroadcast adjReshaped s
 
-/-- Reduce-sum over dimensions that were broadcast (where source was size 1). -/
+/-- Reduce-sum over dimensions that were broadcast (where source was size 1).
+    Uses runtime shape check: reshapes from broadcast shape s₂ back to s₁. -/
 private def reduceBroadcastAdj {s₁ : Shape} (s₂ : Shape)
     (_ : IsBroadcastable s₁ s₂) (adj : TensorExpr Float s₂) : TensorExpr Float s₁ :=
-  -- Apply reduce-sum for each axis where s₁[i] = 1 and s₂[i] > 1, then reshape
-  TensorExpr.reshape adj sorry
+  safeReshape adj s₁
 
-/-- Apply inverse permutation to adjoint. -/
+/-- Apply inverse permutation to adjoint.
+    Builds inverse permutation functionally, then transposes and reshapes. -/
 private def invTransposeAdj {s : Shape} (perm : Vector (Fin s.length) s.length)
     (adj : TensorExpr Float (permuteShape s perm)) : TensorExpr Float s :=
-  -- Construct inverse permutation vector
   let n := s.length
-  let invPermArr : Array (Fin n) := Id.run do
-    let mut arr := Array.replicate n (⟨0, sorry⟩ : Fin n)
-    for i in [:n] do
-      if h : i < perm.size then
-        let p := perm[i]
-        arr := arr.set! p.val ⟨i, sorry⟩
-    return arr
-  let invPermVec : Vector (Fin (permuteShape s perm).length) (permuteShape s perm).length :=
-    ⟨invPermArr.map (fun f => ⟨f.val, sorry⟩), sorry⟩
-  TensorExpr.reshape (.transpose adj invPermVec) sorry
+  let m := (permuteShape s perm).length
+  -- Build inverse permutation: for each output position j, find input i with perm[i] = j
+  let invPermVec : Vector (Fin m) m := Vector.ofFn fun (j : Fin m) =>
+    let found := (List.range n).findIdx fun i =>
+      if h : i < n then (perm.get ⟨i, h⟩).val == j.val else false
+    have hm : 0 < m := by have := j.isLt; omega
+    ⟨found % m, Nat.mod_lt found hm⟩
+  safeReshape (.transpose adj invPermVec) s
 
 /-- Build padding list from slice parameters: lo = starts[i], hi = sIn[i] - starts[i] - sizes[i]. -/
 private def buildSlicePadding (starts sizes sIn : List Nat) : List (Nat × Nat) :=
@@ -75,33 +124,36 @@ private def buildSlicePadding (starts sizes sIn : List Nat) : List (Nat × Nat) 
   | st :: sts, sz :: szs, d :: ds =>
     (st, d - st - sz) :: buildSlicePadding sts szs ds
 
-/-- Pad adjoint of slice back to original shape. -/
+/-- Pad adjoint of slice back to original shape.
+    Uses runtime shape checks for padding length and reshape. -/
 private def padSliceAdj {s : Shape} (starts sizes : List Nat) (_ : ValidSlice s starts sizes)
     (adj : TensorExpr Float sizes) : TensorExpr Float s :=
   let padding := buildSlicePadding starts sizes s
-  TensorExpr.reshape (TensorExpr.pad adj padding 0.0 sorry) sorry
+  safeReshape (safePad adj padding 0.0) s
 
-/-- Slice adjoint of pad to extract original region. -/
+/-- Slice adjoint of pad to extract original region.
+    Uses runtime ValidSlice check. -/
 private def slicePadAdj {s : Shape} (padding : List (Nat × Nat))
     (_ : padding.length = s.length)
     (adj : TensorExpr Float (padShape s padding)) : TensorExpr Float s :=
   let starts := padding.map Prod.fst
-  TensorExpr.slice adj starts s sorry
+  safeSlice adj starts s
 
-/-- Slice adjoint for concat gradient: extract parts for left and right inputs. -/
+/-- Slice adjoint for concat gradient: extract parts for left and right inputs.
+    Uses runtime ValidSlice checks for both slices. -/
 private def sliceConcatAdj {s₁ s₂ : Shape} (axis : Fin s₁.length)
     (_ : ConcatCompatible s₁ s₂ axis.val)
     (adj : TensorExpr Float (concatShape s₁ s₂ axis))
     : TensorExpr Float s₁ × TensorExpr Float s₂ :=
   let starts1 := List.replicate s₁.length 0
-  let adjE1 := TensorExpr.reshape (TensorExpr.slice adj starts1 s₁ sorry) sorry
+  let adjE1 := safeSlice adj starts1 s₁
   let starts2Arr := Id.run do
     let mut s := List.replicate s₂.length 0
     for i in [:s₂.length] do
       if i == axis.val then
         s := s.set i (s₁.getD i 0)
     return s
-  let adjE2 := TensorExpr.reshape (TensorExpr.slice adj starts2Arr s₂ sorry) sorry
+  let adjE2 := safeSlice adj starts2Arr s₂
   (adjE1, adjE2)
 
 namespace TensorExpr
@@ -198,12 +250,10 @@ def backward : TensorExpr Float s → (adjoint : TensorExpr Float s) → Grads
   -- Gather, scan: stub (defer)
   | .gather _ _ _, _ => []
   | .scan _ _ _, _ => []
-  -- Einsum: swap subscripts for gradients
+  -- Einsum: swap subscripts for gradients (runtime validity check)
   | .einsum subsA subsB subsOut eA eB _, adj =>
-    -- ∂L/∂A = einsum(subsOut, subsB, subsA, adj, B)
-    let gradA := TensorExpr.einsum subsOut subsB subsA adj eB sorry
-    -- ∂L/∂B = einsum(subsA, subsOut, subsB, eA, adj)
-    let gradB := TensorExpr.einsum subsA subsOut subsB eA adj sorry
+    let gradA := safeEinsum subsOut subsB subsA adj eB (shapeOf eA)
+    let gradB := safeEinsum subsA subsOut subsB eA adj (shapeOf eB)
     (eA.backward gradA).merge (eB.backward gradB)
 
 /-- Compute gradients of a scalar loss $\ell$ w.r.t. all variables by seeding

@@ -100,11 +100,7 @@ where
 
 /-- Build sizes for a slice: original dim values except `size` at `dimIdx`. -/
 private def mkSizes (ds : DimShape) (dimIdx : Nat) (size : Nat) : List Nat :=
-  go ds 0
-where
-  go : List Dim → Nat → List Nat
-    | [], _ => []
-    | d :: rest, i => (if i == dimIdx then size else d.val) :: go rest (i + 1)
+  (ds.replaceAt dimIdx size).toShape
 
 /-- Slice by dimension name: `t.sliceAt "batch" start size`.
     Keeps the dimension (with reduced size), preserves all other names. -/
@@ -121,12 +117,23 @@ def sliceAt [Scalar α] (t : NamedTensor α ds) (dimName : String)
         if hvalid : ∀ i : Fin s.length,
             List.getD starts i.val 0 + List.getD sizes i.val 0 ≤ s.get i then
           let ds' := ds.replaceAt dimIdx size
-          have hsizes : sizes = ds'.toShape := by sorry
+          have hsizes : sizes = ds'.toShape := rfl
           let proof : ValidSlice s starts sizes := ⟨hlen1, hlen2, hvalid⟩
           some ⟨ds', ⟨hsizes ▸ (.slice t.expr starts sizes proof)⟩⟩
         else none
       else none
     else none
+
+private theorem removeIdx_toShape_eq (ds : DimShape) (i : Nat) (h : i < ds.length) :
+    (ds.removeIdx i).toShape = ds.toShape.removeAt ⟨i, by simp [DimShape.toShape]; exact h⟩ := by
+  induction ds generalizing i with
+  | nil => simp at h
+  | cons d rest ih =>
+    cases i with
+    | zero => simp [DimShape.removeIdx, DimShape.toShape, Shape.removeAt]
+    | succ n =>
+      simp [DimShape.removeIdx, DimShape.toShape, Shape.removeAt]
+      exact ih n (by simp [List.length] at h; omega)
 
 /-- Reduce by dimension name: `t.reduceAt "batch" .sum`.
     Removes the named dimension (rank reduction). -/
@@ -138,7 +145,7 @@ def reduceAt [Scalar α] (t : NamedTensor α ds) (dimName : String)
     if h : dimIdx < ds.length then
       let ds' := ds.removeIdx dimIdx
       have hshape : ds'.toShape = ds.toShape.removeAt ⟨dimIdx, by
-          simp [DimShape.toShape]; exact h⟩ := by sorry
+          simp [DimShape.toShape]; exact h⟩ := removeIdx_toShape_eq ds dimIdx h
       let axis : Fin ds.toShape.length := ⟨dimIdx, by
           simp [DimShape.toShape]; exact h⟩
       some ⟨ds', ⟨hshape ▸ (.reduce op axis t.expr)⟩⟩

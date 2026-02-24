@@ -68,31 +68,34 @@ def adamStep (config : AdamConfig) (env : Env Float)
           | some ps => ps
           | none => { m := Array.replicate td.shape.product 0.0,
                       v := Array.replicate td.shape.product 0.0 }
-        -- Update moments
+        -- Update moments and parameters (element-wise, each index is independent)
         let paramArr := td.data.toArray
         let gradArr := gradTd.data.toArray
-        let size := paramArr.size
-        let mut newM := ps.m
-        let mut newV := ps.v
-        let mut newParam := paramArr
-        for i in [:size] do
+        let n' := td.shape.product
+        let newM := Array.ofFn fun (idx : Fin n') =>
+          let i := idx.val
           let g := gradArr.getD i 0.0
-          let mi := config.beta1 * newM.getD i 0.0 + (1.0 - config.beta1) * g
-          let vi := config.beta2 * newV.getD i 0.0 + (1.0 - config.beta2) * g * g
-          newM := newM.set! i mi
-          newV := newV.set! i vi
+          config.beta1 * ps.m.getD i 0.0 + (1.0 - config.beta1) * g
+        let newV := Array.ofFn fun (idx : Fin n') =>
+          let i := idx.val
+          let g := gradArr.getD i 0.0
+          config.beta2 * ps.v.getD i 0.0 + (1.0 - config.beta2) * g * g
+        let newParam := Array.ofFn fun (idx : Fin n') =>
+          let i := idx.val
+          let g := gradArr.getD i 0.0
+          let mi := config.beta1 * ps.m.getD i 0.0 + (1.0 - config.beta1) * g
+          let vi := config.beta2 * ps.v.getD i 0.0 + (1.0 - config.beta2) * g * g
           -- Bias correction
           let mHat := mi / (1.0 - beta1PowT)
           let vHat := vi / (1.0 - beta2PowT)
           -- Parameter update
-          let pi := newParam.getD i 0.0 - config.lr * mHat / (vHat.sqrt + config.eps)
-          newParam := newParam.set! i pi
+          paramArr.getD i 0.0 - config.lr * mHat / (vHat.sqrt + config.eps)
         -- Store updated state
         newStates := updateParamState newStates name { m := newM, v := newV }
         -- Store updated parameter
         newEnv := newEnv.map fun (n, td') =>
           if n == name then
-            (n, ⟨td'.shape, ⟨newParam, by sorry⟩⟩)
+            (n, ⟨td.shape, ⟨newParam, Array.size_ofFn⟩⟩)
           else (n, td')
     return (newEnv, { paramStates := newStates, step := t })
 
