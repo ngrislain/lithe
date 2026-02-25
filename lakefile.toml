@@ -11,9 +11,6 @@ rev = "main"
 [[lean_lib]]
 name = "Lithe"
 
-[[lean_lib]]
-name = "Examples"
-
 [[lean_exe]]
 name = "lithe"
 root = "Main"
@@ -25,3 +22,7 @@ root = "Test"
 [[lean_exe]]
 name = "gpt2"
 root = "Examples.GPT2"
+
+[[lean_exe]]
+name = "simple-examples"
+root = "Examples.Simple"

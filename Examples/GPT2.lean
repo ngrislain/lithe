@@ -5,7 +5,7 @@ import Lithe
 
 open TensorExpr Tensor
 
-namespace GPT2
+namespace Examples.GPT2
 
 /-- Run GPT-2 inference on a small token sequence. -/
 def inference (envPath : System.FilePath) : IO Unit := do
@@ -63,9 +63,9 @@ def train : IO Unit := do
     -- Initialize with small random values (using a simple hash)
     let data := Array.ofFn fun (idx : Fin (Shape.product shape)) =>
       let i := idx.val
-      let hash := (name.hash + i * 2654435761) % 1000000
-      (hash.toFloat / 1000000.0 - 0.5) * 0.02
-    (name, ⟨shape, ⟨data, by simp [Array.size_ofFn]⟩⟩)
+      let hash := (name.hash + i.toUInt64 * 2654435761) % 1000000
+      (hash.toNat.toFloat / 1000000.0 - 0.5) * 0.02
+    (name, ⟨shape, ⟨data, Array.size_ofFn⟩⟩)
 
   -- Training loop
   let adamConfig : Optim.AdamConfig := { lr := 0.001 }
@@ -83,12 +83,12 @@ def train : IO Unit := do
 
   IO.println "Training demo complete."
 
-end GPT2
+end Examples.GPT2
 
 def main (args : List String) : IO Unit := do
   match args with
-  | ["--train"] => GPT2.train
-  | [path] => GPT2.inference path
+  | ["--train"] => Examples.GPT2.train
+  | [path] => Examples.GPT2.inference path
   | _ =>
     IO.println "Usage:"
     IO.println "  gpt2 model.safetensors   -- Run inference"

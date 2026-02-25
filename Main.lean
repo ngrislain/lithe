@@ -1,5 +1,4 @@
 import Lithe
-import Examples
 
 open TensorExpr Tensor
 
@@ -132,5 +131,3 @@ def main : IO Unit := do
   IO.println ""
 
   IO.println "=== Done ==="
-
-  Examples.examples
